@@ -4,7 +4,7 @@
 
 Our goal is to close the sim to real gap and deploy an AI model to successfully play air hockey against a human. Below is a video of our end results with a quick overview (click image to play video):
 
-[![Watch the video](docs/gameplay_video_screenshot.png)](https://www.youtube.com/watch?v=75mm_B950PQ)
+[![Watch the video](docs/air_hockey_thumbnail4.jpg)](https://youtu.be/ugwpCam1rd0)
 
 
 System Overview:
