@@ -123,6 +123,13 @@ class CameraTracker:
         self.mask = np.empty(img_shape, dtype=np.uint8)
 
     def track(self, frame):
+        """!
+        @brief
+        @param frame
+        @return puck_pos 
+        @return mallet_pos 
+        @return obstructed (bool): True if puck is obstructed and False otherwise
+        """
         cv2.compare(frame, self.thresh_map, cv2.CMP_GE, dst=self.mask)
 
         contours, _ = cv2.findContours(self.mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
@@ -297,7 +304,16 @@ class CameraTracker:
 
         return score_points[sorted_indices[-1]]
     
+
     def process_frame(self, frame, top_down_view=False, printing=False):
+        """!
+        @brief extracts the puck and opponent mallet position from the frame 
+            and saves them in past_data
+        @param printing (bool): prints to screen the puck and opponent mallet position
+        @param top_down_view (bool): generates a top down view
+        @return obstructed ()
+        @return visable (bool): True if puck is visible and False otherwise
+        """
         puck_pos, opponent_mallet_pos, obstructed = self.track(frame)
         if opponent_mallet_pos is None:
             opponent_mallet_pos = self.past_op_mallet_pos
@@ -322,7 +338,8 @@ class CameraTracker:
         	self.generate_top_down_view(puck_pos, opponent_mallet_pos)
         	
         return obstructed, visable
-        	
+
+
     def generate_top_down_view(self, puck_pos, op_mallet_pos):
 
         top_down_image = np.ones((int(self.bounds[1] * 500), int(self.bounds[0] * 500), 3), dtype=np.uint8) * 255

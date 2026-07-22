@@ -480,7 +480,10 @@ def save_data(recording_data):
         
         # Write rows
         for i in range(len(recording_data)):
-            writer.writerow([recording_data[i, 0], recording_data[i, 1], recording_data[i, 2], recording_data[i, 3], recording_data[i, 4], recording_data[i,5], recording_data[i,6]])
+            writer.writerow([recording_data[i, 0], recording_data[i, 1], 
+                             recording_data[i, 2], recording_data[i, 3], 
+                             recording_data[i, 4], recording_data[i,5], 
+                             recording_data[i,6]])
         print("SIGNAL END")   
 
 def system_loop(cam, load):
