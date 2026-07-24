@@ -32,10 +32,10 @@ obs[-4:-1] = (-6.5e-06)/ap.pullyR * 1e4
 
 obs_flip = np.empty((obs_dim), dtype=np.float32)
 
-margin = 0.05
+margin = 0.035
 
 mallet_r = 0.1011 / 2
-puck_r = 0.0629 / 2
+puck_r = 0.0827024 / 2
 
 num_points = 11
 
@@ -477,7 +477,7 @@ def system_loop(cam, load):
     """Optimized timing measurement with minimal overhead"""
     
     # Disable garbage collection during measurement
-    img_shape = (1450, 1300)
+    img_shape = (1450, 1300) # (height, width) TBD!!!
     offset = (20, 396)
 
     PORT = '/dev/ttyUSB0'  # Adjust this to COM port or /dev/ttyUSBx
@@ -703,7 +703,7 @@ def system_loop(cam, load):
         obs[20:22] = pos #add current mallet pos
         obs[22:24] = vel
         
-        if (obs[0] > table_bounds[0]/2) or ((obs[-1]==1) and (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5))):
+        if (obs[0] > table_bounds[0]/2): # or ((obs[-1]==1) and (np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0) > 3.0)):
             #if obs[-1] == 0:
             #    print("defend")
             obs[-1] = 1.0
@@ -776,8 +776,9 @@ def system_loop(cam, load):
 
             Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
             
-            #Vo[0] = np.minimum(Vo[0], 5)
-            #Vo[1] = np.minimum(Vo[1], 5)
+            MAX_ACTION_VOLTAGE = 24.0 # This is the feed forward voltage only! Actual voltage adds feedback.
+            Vo[0] = np.minimum(Vo[0], MAX_ACTION_VOLTAGE)
+            Vo[1] = np.minimum(Vo[1], MAX_ACTION_VOLTAGE)
             obs[28:30] = xf
             obs[30:32] = Vo
             #print("A")

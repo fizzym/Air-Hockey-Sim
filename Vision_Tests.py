@@ -375,8 +375,8 @@ def object_loc(cam, load):
         image.Release()
         
         #1105, 1259
-        #cv2.imshow("vision", img[::2, ::2])
-        #cv2.waitKey(0)
+        cv2.imshow("vision", img[::2, ::2])
+        cv2.waitKey(0)
         
         y_max = np.max(img, axis=1)
         y_max[1259] = np.max(np.concatenate([img[:1106, 1259], np.array([0]), img[1107:, 1259]]))

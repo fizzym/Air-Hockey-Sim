@@ -27,6 +27,7 @@ def detect_aruco_markers(gray):
         
         return top_right_corners
     
+    print("ArUCO markers not detected.")
     return {}
 
 
@@ -254,6 +255,7 @@ def calibrate_extrinsic(img: np.ndarray, aruco_3d_points, intrinsic_matrix, dist
         return None, None
     
     image_points = np.array([top_right_corners[i] for i in range(6)], dtype=np.float32)
+    print("ArUCO image points: {}".format(image_points))
 
     success, rvec, tvec = cv2.solvePnP(aruco_3d_points,
                                        image_points,

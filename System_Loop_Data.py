@@ -800,8 +800,8 @@ def system_loop(cam, load):
 
             Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
             
-            #Vo[0] = np.minimum(Vo[0], 5)
-            #Vo[1] = np.minimum(Vo[1], 5)
+            Vo[0] = np.minimum(Vo[0], 3)
+            Vo[1] = np.minimum(Vo[1], 3)
             obs[28:30] = xf
             obs[30:32] = Vo
             #print("A")

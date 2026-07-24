@@ -239,6 +239,7 @@ def system_loop():
     print(f"Pulley radius measured as: {pully_R}")
     ap.pullyR = pully_R
     ap.C1 = [ap.Vmax * ap.pullyR / 2, ap.Vmax * ap.pullyR / 2]
+    ap.calculate_bounds()
     
     ser.reset_input_buffer()
     
@@ -284,6 +285,8 @@ def system_loop():
     get_mallet(ser)
     pos, vel, acc = get_init_conditions()
     
+    data = ap.update_path(pos, vel, acc, pos + np.array([0.001,0.001]), np.array([3,3]))
+    
     #data = ap.update_path(pos, vel, acc, xf, Vo)
 
     #ser.write(b'\n' + data + b'\n')
@@ -309,7 +312,7 @@ def system_loop():
         if idx == 4:
             idx = 0
 	    
-        Vo = np.array([3, 3])
+        Vo = np.array([1, 1])
 
         get_mallet(ser)
         pos, vel, acc = get_init_conditions()
