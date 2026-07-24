@@ -374,7 +374,7 @@ def set_roi(cam, width, height, offset_x=0, offset_y=0):
 def deq(q, xmin, xmax):
     y = q/32767
     return (y+1)/2 * (xmax - xmin) + xmin
-        
+
 
 def get_mallet(ser):   
     global stored_buffer
@@ -472,6 +472,7 @@ def apply_symmetry(t_obs):
     obs_flip[29] = table_bounds[1] - obs_flip[29]
 
     return obs_flip
+
 
 def system_loop(cam, load):
     """Optimized timing measurement with minimal overhead"""
@@ -621,7 +622,12 @@ def system_loop(cam, load):
     ap.C1 = [ap.Vmax * ap.pullyR / 2, ap.Vmax * ap.pullyR / 2]
     ap.calculate_bounds()
     
-    obs[-7:-1] = np.array([ap.a1/ap.pullyR * 0.42*1e4, ap.a2/ap.pullyR * 1e1, ap.a3/ap.pullyR * 1e0, ap.b1/ap.pullyR * 0.73*1e4, ap.b2/ap.pullyR * 1e1, ap.b3/ap.pullyR * 0.8*1e1])
+    obs[-7:-1] = np.array([ap.a1/ap.pullyR * 0.42*1e4, 
+                           ap.a2/ap.pullyR * 1e1, 
+                           ap.a3/ap.pullyR * 1e0, 
+                           ap.b1/ap.pullyR * 0.73*1e4, 
+                           ap.b2/ap.pullyR * 1e1, 
+                           ap.b3/ap.pullyR * 0.8*1e1])
     
     ser.reset_input_buffer()
     
@@ -693,7 +699,7 @@ def system_loop(cam, load):
         
         get_mallet(ser)
         pos, vel, acc = get_init_conditions()
-            
+        
         #new_time = time.perf_counter()
         #time_diff = new_time - timer
         #timer = new_time
@@ -703,7 +709,12 @@ def system_loop(cam, load):
         obs[20:22] = pos #add current mallet pos
         obs[22:24] = vel
         
-        if (obs[0] > table_bounds[0]/2) or ((obs[-1]==1) and (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5))):
+        if ((obs[0] > table_bounds[0]/2) or 
+            ((obs[-1]==1) and 
+             (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or 
+              ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or 
+              ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or 
+              ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5)))):
             #if obs[-1] == 0:
             #    print("defend")
             obs[-1] = 1.0
