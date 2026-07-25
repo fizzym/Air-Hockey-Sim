@@ -32,10 +32,10 @@ obs[-4:-1] = (-6.5e-06)/ap.pullyR * 1e4
 
 obs_flip = np.empty((obs_dim), dtype=np.float32)
 
-margin = 0.05
+margin = 0.035
 
 mallet_r = 0.1011 / 2
-puck_r = 0.0629 / 2
+puck_r = 0.0827024 / 2
 
 num_points = 11
 
@@ -375,6 +375,7 @@ def deq(q, xmin, xmax):
     y = q/32767
     return (y+1)/2 * (xmax - xmin) + xmin
 
+
 def get_mallet(ser):   
     global stored_buffer
     global mallet_buffer 
@@ -471,23 +472,42 @@ def apply_symmetry(t_obs):
     obs_flip[29] = table_bounds[1] - obs_flip[29]
 
     return obs_flip
-    
+
+
 def save_data(recording_data):
+    """!
+    @brief write data from buffer to file
+    @param recording_data (tuple): data to be written to file contains the following info
+                * puck position x
+                * puck position y
+                * opponent mallet position x
+                * opponent mallet position y
+                * robot mallet position x
+                * robot mallet position y
+                * robot mallet speed x_dot
+                * robot mallet speed y_dot
+                * time elapsed since previous loop in seconds
+    @return none
+    """
     with open("new_data/system_loop_data_MaxV_3.csv", "w", newline="") as f:
         writer = csv.writer(f)
         # Write header
-        writer.writerow(["Px", "Py", "Mx", "My", "Mxv", "Myv", "dt"])
+        writer.writerow(["Px", "Py", "Ox", "Oy", "Mx", "My", "Mxv", "Myv", "dt"])
         
         # Write rows
         for i in range(len(recording_data)):
-            writer.writerow([recording_data[i, 0], recording_data[i, 1], recording_data[i, 2], recording_data[i, 3], recording_data[i, 4], recording_data[i,5], recording_data[i,6]])
+            writer.writerow([recording_data[i, 0], recording_data[i, 1], 
+                             recording_data[i, 2], recording_data[i, 3], 
+                             recording_data[i, 4], recording_data[i, 5], 
+                             recording_data[i, 6], recording_data[i, 7],
+                             recording_data[i,8]])
         print("SIGNAL END")   
 
 def system_loop(cam, load):
     """Optimized timing measurement with minimal overhead"""
     
     # Disable garbage collection during measurement
-    img_shape = (1450, 1300)
+    img_shape = (1450, 1300) # (height, width) TBD!!!
     offset = (20, 396)
 
     PORT = '/dev/ttyUSB0'  # Adjust this to COM port or /dev/ttyUSBx
@@ -631,7 +651,12 @@ def system_loop(cam, load):
     ap.C1 = [ap.Vmax * ap.pullyR / 2, ap.Vmax * ap.pullyR / 2]
     ap.calculate_bounds()
     
-    obs[-7:-1] = np.array([ap.a1/ap.pullyR * 0.42*1e4, ap.a2/ap.pullyR * 1e1, ap.a3/ap.pullyR * 1e0, ap.b1/ap.pullyR * 0.73*1e4, ap.b2/ap.pullyR * 1e1, ap.b3/ap.pullyR * 0.8*1e1])
+    obs[-7:-1] = np.array([ap.a1/ap.pullyR * 0.42*1e4, 
+                           ap.a2/ap.pullyR * 1e1, 
+                           ap.a3/ap.pullyR * 1e0, 
+                           ap.b1/ap.pullyR * 0.73*1e4, 
+                           ap.b2/ap.pullyR * 1e1, 
+                           ap.b3/ap.pullyR * 0.8*1e1])
     
     ser.reset_input_buffer()
     
@@ -684,14 +709,20 @@ def system_loop(cam, load):
 
     get_mallet(ser)
 
-    recording_data = np.zeros([20000, 7])
+    # === DATA LOGGING ===
+    # @brief Program stops after acquiring REC_DATA_MAX_ENTRIES number of
+    #         data samplings.
+    REC_DATA_MAX_ENTRIES = 20_000
+    REC_DATA_PARAMS = 9
+    recording_data = np.zeros([REC_DATA_MAX_ENTRIES, REC_DATA_PARAMS])
     timer = time.perf_counter()
+    # ======
     
     left_hysteresis = False
     symmetry = False
     timer1 = time.perf_counter()
     
-    puck_hidden_buffer = deque([False]*30, maxlen=30)
+    puck_hidden_buffer = deque([False] * 30, maxlen=30)
     center = False
     
     idx = 0
@@ -706,28 +737,37 @@ def system_loop(cam, load):
         
         get_mallet(ser)
         pos, vel, acc = get_init_conditions()
-            
+
+        # === DATA LOGGING ===
         new_time = time.perf_counter()
         time_diff = new_time - timer
         timer = new_time
+        # ======
         
         obs[:20] = track.past_data.get()
         obs[24:26] = obs[20:22] #update past mallet
         obs[26:28] = obs[22:24]
         obs[20:22] = pos #add current mallet pos
         obs[22:24] = vel
-        
-        recording_data[idx,:2] = obs[:2]
-        recording_data[idx,2:6] = obs[20:24]
-        recording_data[idx,6] = time_diff
+
+        # === DATA LOGGING ===
+        recording_data[idx,:4] = obs[:4]
+        recording_data[idx,4:8] = obs[20:24]
+        recording_data[idx,8] = time_diff
         idx += 1
         
         if idx == len(recording_data):
             save_data(recording_data)
             print("SIGNAL END")
             break
+        # ======
         
-        if (obs[0] > table_bounds[0]/2) or ((obs[-1]==1) and (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5))):
+        if ((obs[0] > table_bounds[0]/2) or 
+            ((obs[-1]==1) and 
+             (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or 
+              ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or 
+              ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or 
+              ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5)))):
             #if obs[-1] == 0:
             #    print("defend")
             obs[-1] = 1.0
@@ -800,8 +840,9 @@ def system_loop(cam, load):
 
             Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
             
-            Vo[0] = np.minimum(Vo[0], 3)
-            Vo[1] = np.minimum(Vo[1], 3)
+            MAX_ACTION_VOLTAGE = 24.0 # This is the feed forward voltage only! Actual voltage adds feedback.
+            Vo[0] = np.minimum(Vo[0], MAX_ACTION_VOLTAGE)
+            Vo[1] = np.minimum(Vo[1], MAX_ACTION_VOLTAGE)
             obs[28:30] = xf
             obs[30:32] = Vo
             #print("A")
@@ -827,7 +868,8 @@ def system_loop(cam, load):
         image.Release()
         
         puck_hidden_buffer.append(not visable)
-        
+
+        # === DATA LOGGING ===
         get_mallet(ser)
         pos, vel, acc = get_init_conditions()
             
@@ -835,19 +877,20 @@ def system_loop(cam, load):
         time_diff = new_time - timer
         timer = new_time
         
-        recording_data[idx,:2] = track.past_data.get()[:2]
-        recording_data[idx,2:4] = pos
-        recording_data[idx,4:6] = vel
-        recording_data[idx,6] = time_diff
+        recording_data[idx,:2] = track.past_data.get()[:4]
+        recording_data[idx,4:6] = pos
+        recording_data[idx,6:8] = vel
+        recording_data[idx,8] = time_diff
         idx += 1
         
         if idx == len(recording_data):
             save_data(recording_data)
             print("SIGNAL END")
             break
+        # ======
             
-    
     cam.EndAcquisition()
+    
 
 def str2bool(v):
     if isinstance(v, bool):
