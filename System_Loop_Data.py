@@ -762,12 +762,12 @@ def system_loop(cam, load):
             break
         # ======
         
-        if ((obs[0] > table_bounds[0]/2) or 
-            ((obs[-1]==1) and 
-             (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or 
-              ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or 
-              ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or 
-              ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5)))):
+        if (obs[0] > table_bounds[0]/2): # or 
+            # ((obs[-1]==1) and 
+            # (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or 
+            #  ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or 
+            #  ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or 
+            #  ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5)))):
             #if obs[-1] == 0:
             #    print("defend")
             obs[-1] = 1.0
@@ -890,7 +890,7 @@ def system_loop(cam, load):
         # ======
             
     cam.EndAcquisition()
-    
+
 
 def str2bool(v):
     if isinstance(v, bool):

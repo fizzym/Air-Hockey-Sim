@@ -709,7 +709,9 @@ def system_loop(cam, load):
         obs[20:22] = pos #add current mallet pos
         obs[22:24] = vel
         
-        if (obs[0] > table_bounds[0]/2): # or ((obs[-1]==1) and (np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0) > 3.0)):
+        if (obs[0] > table_bounds[0]/2): # or 
+            # ((obs[-1]==1) and 
+            # (np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0) > 3.0)):
             #if obs[-1] == 0:
             #    print("defend")
             obs[-1] = 1.0
