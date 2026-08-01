@@ -599,7 +599,7 @@ def system_loop(cam, load):
     ser.reset_input_buffer()
 
     ser.write(b'\n')
-    input("Place mallet bottom right")
+    input("Place mallet bottom right ... then press Enter")
     
     ser.write(b'\n')
     
@@ -607,7 +607,7 @@ def system_loop(cam, load):
         continue
     ser.reset_input_buffer()
     
-    input("Place mallet bottom left")
+    input("Place mallet bottom left ... then press Enter")
     
     ser.write(b'\n')
     
@@ -631,7 +631,7 @@ def system_loop(cam, load):
     
     ser.reset_input_buffer()
     
-    input("Remove calibration device")
+    input("Remove calibration device if any ... then press Enter")
     
     ser.write(b'\n')
     
@@ -639,7 +639,7 @@ def system_loop(cam, load):
         continue
     ser.reset_input_buffer()
     
-    input("Turn on Power to Motors")
+    input("Turn on Power to Motors ... then press Enter")
 
     ser.write(b'\n')
     
@@ -647,7 +647,7 @@ def system_loop(cam, load):
         continue
     ser.reset_input_buffer()
 
-    input("Enter to Start")
+    input("Press Enter to start")
     time.sleep(1.0)
     
     gc.collect()
@@ -784,7 +784,7 @@ def system_loop(cam, load):
 
             Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
             
-            MAX_ACTION_VOLTAGE = 24.0 # This is the feed forward voltage only! Actual voltage adds feedback.
+            MAX_ACTION_VOLTAGE = 10.0 # This is the feed forward voltage only! Actual voltage adds feedback.
             Vo[0] = np.minimum(Vo[0], MAX_ACTION_VOLTAGE)
             Vo[1] = np.minimum(Vo[1], MAX_ACTION_VOLTAGE)
             obs[28:30] = xf

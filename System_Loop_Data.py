@@ -19,7 +19,9 @@ import torch
 import agent_processing as ap
 import argparse
 import csv
+
 from collections import deque
+from datetime import datetime
 
 torch.set_num_threads(2)
 torch.set_num_interop_threads(1)
@@ -474,7 +476,7 @@ def apply_symmetry(t_obs):
     return obs_flip
 
 
-def save_data(recording_data):
+def save_data(recording_data, start_time):
     """!
     @brief write data from buffer to file
     @param recording_data (tuple): data to be written to file contains the following info
@@ -487,9 +489,10 @@ def save_data(recording_data):
                 * robot mallet speed x_dot
                 * robot mallet speed y_dot
                 * time elapsed since previous loop in seconds
+    @param start_time (str): datetime to uniquely identify .CSV file
     @return none
     """
-    with open("new_data/system_loop_data_MaxV_3.csv", "w", newline="") as f:
+    with open("new_data/system_loop_data_" + start_time +".csv", "w", newline="") as f:
         writer = csv.writer(f)
         # Write header
         writer.writerow(["Px", "Py", "Ox", "Oy", "Mx", "My", "Mxv", "Myv", "dt"])
@@ -506,6 +509,8 @@ def save_data(recording_data):
 def system_loop(cam, load):
     """Optimized timing measurement with minimal overhead"""
     
+    app_start_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
     # Disable garbage collection during measurement
     img_shape = (1450, 1300) # (height, width) TBD!!!
     offset = (20, 396)
@@ -515,6 +520,9 @@ def system_loop(cam, load):
 
     # === CONNECT ===
     ser = serial.Serial(PORT, BAUD, timeout=0)
+
+    # === START IMAGE INITIALIZATION ===
+    # Run image calibration if parameters are not loaded
     if not load:
         max_img_shape = (1536, 2048)
         set_roi(cam,max_img_shape[1],max_img_shape[0],0,0)
@@ -606,6 +614,7 @@ def system_loop(cam, load):
         del cutoff
         
         cam.EndAcquisition()
+    # Load image calibration data if parameters available
     else:
         setup_data = np.load("setup_data.npz")
         track = tracker.CameraTracker(setup_data["rotation_matrix"],
@@ -619,7 +628,8 @@ def system_loop(cam, load):
         set_pixel_format(cam, mode="BayerRG8")
         configure_camera(cam, gain_val=25.0, exposure_val=100.0, gamma_val=1.0, black_level_val=-5, balance_ratio_val=3.4)
         set_frame_rate(cam, target_fps=120.0)
-        
+    # === END IMAGE INITIALIZATION ===
+
     gc.collect()
     
     ser.write(b'\n')
@@ -628,7 +638,7 @@ def system_loop(cam, load):
     ser.reset_input_buffer()
 
     ser.write(b'\n')
-    input("Place mallet bottom right")
+    input("Place mallet bottom right ... then press Enter")
     
     ser.write(b'\n')
     
@@ -636,7 +646,7 @@ def system_loop(cam, load):
         continue
     ser.reset_input_buffer()
     
-    input("Place mallet bottom left")
+    input("Place mallet bottom left ... then press Enter")
     
     ser.write(b'\n')
     
@@ -660,7 +670,7 @@ def system_loop(cam, load):
     
     ser.reset_input_buffer()
     
-    input("Remove calibration device")
+    input("Remove calibration device if any ... then press Enter")
     
     ser.write(b'\n')
     
@@ -668,7 +678,7 @@ def system_loop(cam, load):
         continue
     ser.reset_input_buffer()
     
-    input("Turn on Power to Motors")
+    input("Turn on Power to Motors ... then press Enter")
 
     ser.write(b'\n')
     
@@ -676,7 +686,7 @@ def system_loop(cam, load):
         continue
     ser.reset_input_buffer()
 
-    input("Enter to Start")
+    input("Press Enter to start")
     time.sleep(1.0)
     
     gc.collect()
@@ -715,7 +725,7 @@ def system_loop(cam, load):
     REC_DATA_MAX_ENTRIES = 20_000
     REC_DATA_PARAMS = 9
     recording_data = np.zeros([REC_DATA_MAX_ENTRIES, REC_DATA_PARAMS])
-    timer = time.perf_counter()
+    prev_time = time.perf_counter()
     # ======
     
     left_hysteresis = False
@@ -740,8 +750,8 @@ def system_loop(cam, load):
 
         # === DATA LOGGING ===
         new_time = time.perf_counter()
-        time_diff = new_time - timer
-        timer = new_time
+        time_diff = new_time - prev_time
+        prev_time = new_time
         # ======
         
         obs[:20] = track.past_data.get()
@@ -757,7 +767,7 @@ def system_loop(cam, load):
         idx += 1
         
         if idx == len(recording_data):
-            save_data(recording_data)
+            save_data(recording_data, app_start_time)
             print("SIGNAL END")
             break
         # ======
@@ -840,7 +850,7 @@ def system_loop(cam, load):
 
             Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
             
-            MAX_ACTION_VOLTAGE = 24.0 # This is the feed forward voltage only! Actual voltage adds feedback.
+            MAX_ACTION_VOLTAGE = 22.0 # This is the feed forward voltage only! Actual voltage adds feedback.
             Vo[0] = np.minimum(Vo[0], MAX_ACTION_VOLTAGE)
             Vo[1] = np.minimum(Vo[1], MAX_ACTION_VOLTAGE)
             obs[28:30] = xf
@@ -870,23 +880,25 @@ def system_loop(cam, load):
         puck_hidden_buffer.append(not visable)
 
         # === DATA LOGGING ===
-        get_mallet(ser)
-        pos, vel, acc = get_init_conditions()
+        # TODO: Figure out why Hudson was logging at end of loop also.
+        if True:
+            get_mallet(ser)
+            pos, vel, acc = get_init_conditions()
+                
+            new_time = time.perf_counter()
+            time_diff = new_time - prev_time
+            prev_time = new_time
             
-        new_time = time.perf_counter()
-        time_diff = new_time - timer
-        timer = new_time
-        
-        recording_data[idx,:2] = track.past_data.get()[:4]
-        recording_data[idx,4:6] = pos
-        recording_data[idx,6:8] = vel
-        recording_data[idx,8] = time_diff
-        idx += 1
-        
-        if idx == len(recording_data):
-            save_data(recording_data)
-            print("SIGNAL END")
-            break
+            recording_data[idx,:4] = track.past_data.get()[:4]
+            recording_data[idx,4:6] = pos
+            recording_data[idx,6:8] = vel
+            recording_data[idx,8] = time_diff
+            idx += 1
+            
+            if idx == len(recording_data):
+                save_data(recording_data, app_start_time)
+                print("SIGNAL END")
+                break
         # ======
             
     cam.EndAcquisition()
