@@ -476,7 +476,7 @@ def apply_symmetry(t_obs):
     return obs_flip
 
 
-def save_data(recording_data, start_time):
+def save_data(recording_data, log_file_path):
     """!
     @brief write data from buffer to file
     @param recording_data (tuple): data to be written to file contains the following info
@@ -489,10 +489,10 @@ def save_data(recording_data, start_time):
                 * robot mallet speed x_dot
                 * robot mallet speed y_dot
                 * time elapsed since previous loop in seconds
-    @param start_time (str): datetime to uniquely identify .CSV file
+    @param log_file_path (str): log file path
     @return none
     """
-    with open("new_data/system_loop_data_" + start_time +".csv", "w", newline="") as f:
+    with open(log_file_path, "w", newline="") as f:
         writer = csv.writer(f)
         # Write header
         writer.writerow(["Px", "Py", "Ox", "Oy", "Mx", "My", "Mxv", "Myv", "dt"])
@@ -510,6 +510,8 @@ def system_loop(cam, load):
     """Optimized timing measurement with minimal overhead"""
     
     app_start_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_file_path = "new_data/system_loop_data_" + app_start_time +".csv"
+    print("**** LOGGING DATA IN: " + log_file_path)
 
     # Disable garbage collection during measurement
     img_shape = (1450, 1300) # (height, width) TBD!!!
@@ -767,7 +769,7 @@ def system_loop(cam, load):
         idx += 1
         
         if idx == len(recording_data):
-            save_data(recording_data, app_start_time)
+            save_data(recording_data, log_file_path)
             print("SIGNAL END")
             break
         # ======
@@ -896,7 +898,7 @@ def system_loop(cam, load):
             idx += 1
             
             if idx == len(recording_data):
-                save_data(recording_data, app_start_time)
+                save_data(recording_data, log_file_path)
                 print("SIGNAL END")
                 break
         # ======
