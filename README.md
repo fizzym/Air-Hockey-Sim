@@ -1,3 +1,8 @@
+<p align="right">
+  <img width="100" height="80" alt="ENPH_Logo_Circle" src="https://github.com/user-attachments/assets/33d02263-aef4-4261-9ee2-110321680415" />
+  <img width="63" height="80" alt="UBC_Logo" src="https://github.com/user-attachments/assets/1f8f55cd-a5d9-4ea4-b1ca-8d94343d486d" />
+</p>
+
 # AI Air Hockey
 
 **Project Goal**
