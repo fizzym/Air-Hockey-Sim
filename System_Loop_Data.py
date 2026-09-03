@@ -19,6 +19,7 @@ import torch
 import agent_processing as ap
 import argparse
 import csv
+import sys
 
 from collections import deque
 from datetime import datetime
@@ -724,7 +725,7 @@ def system_loop(cam, load):
     # === DATA LOGGING ===
     # @brief Program stops after acquiring REC_DATA_MAX_ENTRIES number of
     #         data samplings.
-    REC_DATA_MAX_ENTRIES = 20_000
+    REC_DATA_MAX_ENTRIES = 200_000 #at a ~8ms sample rate this is 1600 sec (26.66 mins)
     REC_DATA_PARAMS = 9
     recording_data = np.zeros([REC_DATA_MAX_ENTRIES, REC_DATA_PARAMS])
     prev_time = time.perf_counter()
@@ -738,162 +739,34 @@ def system_loop(cam, load):
     center = False
     
     idx = 0
-    while True:
-    
-        image = cam.GetNextImage()
-        img = image.GetData().reshape(img_shape)
-        _, visable = track.process_frame(img)
-        image.Release()
+    try:
+        while True:
         
-        puck_hidden_buffer.append(not visable)
-        
-        get_mallet(ser)
-        pos, vel, acc = get_init_conditions()
-
-        # === DATA LOGGING ===
-        new_time = time.perf_counter()
-        time_diff = new_time - prev_time
-        prev_time = new_time
-        # ======
-        
-        obs[:20] = track.past_data.get()
-        obs[24:26] = obs[20:22] #update past mallet
-        obs[26:28] = obs[22:24]
-        obs[20:22] = pos #add current mallet pos
-        obs[22:24] = vel
-
-        # === DATA LOGGING ===
-        recording_data[idx,:4] = obs[:4]
-        recording_data[idx,4:8] = obs[20:24]
-        recording_data[idx,8] = time_diff
-        idx += 1
-        
-        if idx == len(recording_data):
-            save_data(recording_data, log_file_path)
-            print("SIGNAL END")
-            break
-        # ======
-        
-        if (obs[0] > table_bounds[0]/2): # or 
-            # ((obs[-1]==1) and 
-            # (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or 
-            #  ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or 
-            #  ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or 
-            #  ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5)))):
-            #if obs[-1] == 0:
-            #    print("defend")
-            obs[-1] = 1.0
-        else:
-            #if obs[-1] == 1.0:
-            #    print("attack")
-            obs[-1] = 0.0
-        
-        if left_hysteresis and obs[0] > table_bounds[0]/2 + 0.1:
-            left_hysteresis = False
-            symmetry = np.random.random() < 0.5
-        elif (not left_hysteresis) and obs[0] < table_bounds[0]/2 - 0.1:
-            left_hysteresis = True
-      
-        if symmetry:
-            tensor_obs = TensorDict({"observation": torch.tensor(obs, dtype=torch.float32)})
-            with torch.no_grad():
-                policy_out = ap.policy_module(tensor_obs)
-            action = policy_out["action"].detach().numpy()
-        else:
-            tensor_obs = TensorDict({"observation": torch.tensor(apply_symmetry(obs), dtype=torch.float32)})
-            with torch.no_grad():
-                policy_out = ap.policy_module(tensor_obs)
-            action = policy_out["action"].detach().numpy()
-            action[1] = table_bounds[1] - action[1]
-
-        
-        no_update = action[-1] > np.random.random()
-        #print(action)
-        
-        if np.all(puck_hidden_buffer):
-            if not center:
-                no_update = False
-                action[:4] = np.array([table_bounds[0]/4, table_bounds[1]/2, 0.26, 0.0])
-                center = True
-                
-                xf = action[:2]
-                Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
-                obs[28:30] = xf
-                obs[30:32] = Vo
-                
-                time_passed = time.perf_counter() - timer1
-                timer1 = time.perf_counter()
-                pos, vel, acc = ap.get_IC(time_passed)
-
-                data = ap.update_path(pos, vel, acc, xf, Vo)
-                ser.write(b'\n' + data + b'\n')
-        else:
-            center = False
-
-        if (not no_update) and (not center):
-            #obs[28:30] = action[:2]
-            #print('--')
-            #print(obs)
-            #print(action)
-            xf = action[:2]
-
-            xf[0] = np.maximum(margin+mallet_r, xf[0])
-            xf[0] = np.minimum(table_bounds[0]/2-mallet_r-margin, xf[0])
-
-            xf[1] = np.maximum(margin+mallet_r, xf[1])
-            xf[1] = np.minimum(table_bounds[1]-margin-mallet_r, xf[1])
+            image = cam.GetNextImage()
+            img = image.GetData().reshape(img_shape)
+            _, visable = track.process_frame(img)
+            image.Release()
             
-            if ((xf[0] < (mallet_r + 2*puck_r + 0.01)) & (obs[0] < obs[20])):
-                xf[0] = mallet_r + 2*puck_r + 0.01
-            if ((xf[1] < (mallet_r + 2*puck_r + 0.01)) & (obs[1] < obs[21])):
-                xf[1] = mallet_r + 2*puck_r + 0.01
-            elif ((xf[1] > (table_bounds[1] - mallet_r - 2*puck_r - 0.01)) & (obs[1] > obs[21])):
-                xf[1] = table_bounds[1] - mallet_r - 2*puck_r - 0.01
-
-            Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
+            puck_hidden_buffer.append(not visable)
             
-            MAX_ACTION_VOLTAGE = 22.0 # This is the feed forward voltage only! Actual voltage adds feedback.
-            Vo[0] = np.minimum(Vo[0], MAX_ACTION_VOLTAGE)
-            Vo[1] = np.minimum(Vo[1], MAX_ACTION_VOLTAGE)
-            obs[28:30] = xf
-            obs[30:32] = Vo
-            #print("A")
-            #print(xf)
-            #print(Vo)
-            
-            #Vo[0] = 7
-            #Vo[1] = 7
-            #obs[28:32] = np.concatenate([xf, Vo], axis=0)
-            
-            time_passed = time.perf_counter() - timer1
-            timer1 = time.perf_counter()
-            pos, vel, acc = ap.get_IC(time_passed)
-
-            #new_pos = pos + vel * dt + 0.5 * acc * dt**2
-            #new_vel = vel + acc * dt
-            data = ap.update_path(pos, vel, acc, xf, Vo)
-            ser.write(b'\n' + data + b'\n')
-        
-        image = cam.GetNextImage()
-        img = image.GetData().reshape(img_shape)
-        _, visable = track.process_frame(img)
-        image.Release()
-        
-        puck_hidden_buffer.append(not visable)
-
-        # === DATA LOGGING ===
-        # TODO: Figure out why Hudson was logging at end of loop also.
-        if True:
             get_mallet(ser)
             pos, vel, acc = get_init_conditions()
-                
+
+            # === DATA LOGGING ===
             new_time = time.perf_counter()
             time_diff = new_time - prev_time
             prev_time = new_time
+            # ======
             
-            recording_data[idx,:4] = track.past_data.get()[:4]
-            recording_data[idx,4:6] = pos
-            recording_data[idx,6:8] = vel
+            obs[:20] = track.past_data.get()
+            obs[24:26] = obs[20:22] #update past mallet
+            obs[26:28] = obs[22:24]
+            obs[20:22] = pos #add current mallet pos
+            obs[22:24] = vel
+
+            # === DATA LOGGING ===
+            recording_data[idx,:4] = obs[:4]
+            recording_data[idx,4:8] = obs[20:24]
             recording_data[idx,8] = time_diff
             idx += 1
             
@@ -901,7 +774,143 @@ def system_loop(cam, load):
                 save_data(recording_data, log_file_path)
                 print("SIGNAL END")
                 break
-        # ======
+            # ======
+            
+            if (obs[0] > table_bounds[0]/2): # or 
+                # ((obs[-1]==1) and 
+                # (((np.linalg.norm(obs[:2] - obs[4*3:4*3+2]) / (5/120.0)) > 0.5) or 
+                #  ((np.linalg.norm(obs[:2] - obs[4*2:4*2+2]) / (2/120.0)) > 0.5) or 
+                #  ((np.linalg.norm(obs[:2] - obs[4*1:4*1+2]) / (1/120.0)) > 0.5) or 
+                #  ((np.linalg.norm(obs[:2] - obs[4*4:4*4+2]) / (11/120.0)) > 0.5)))):
+                #if obs[-1] == 0:
+                #    print("defend")
+                obs[-1] = 1.0
+            else:
+                #if obs[-1] == 1.0:
+                #    print("attack")
+                obs[-1] = 0.0
+            
+            if left_hysteresis and obs[0] > table_bounds[0]/2 + 0.1:
+                left_hysteresis = False
+                symmetry = np.random.random() < 0.5
+            elif (not left_hysteresis) and obs[0] < table_bounds[0]/2 - 0.1:
+                left_hysteresis = True
+        
+            if symmetry:
+                tensor_obs = TensorDict({"observation": torch.tensor(obs, dtype=torch.float32)})
+                with torch.no_grad():
+                    policy_out = ap.policy_module(tensor_obs)
+                action = policy_out["action"].detach().numpy()
+            else:
+                tensor_obs = TensorDict({"observation": torch.tensor(apply_symmetry(obs), dtype=torch.float32)})
+                with torch.no_grad():
+                    policy_out = ap.policy_module(tensor_obs)
+                action = policy_out["action"].detach().numpy()
+                action[1] = table_bounds[1] - action[1]
+
+            
+            no_update = action[-1] > np.random.random()
+            #print(action)
+            
+            if np.all(puck_hidden_buffer):
+                if not center:
+                    no_update = False
+                    action[:4] = np.array([table_bounds[0]/4, table_bounds[1]/2, 0.26, 0.0])
+                    center = True
+                    
+                    xf = action[:2]
+                    Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
+                    obs[28:30] = xf
+                    obs[30:32] = Vo
+                    
+                    time_passed = time.perf_counter() - timer1
+                    timer1 = time.perf_counter()
+                    pos, vel, acc = ap.get_IC(time_passed)
+
+                    data = ap.update_path(pos, vel, acc, xf, Vo)
+                    ser.write(b'\n' + data + b'\n')
+            else:
+                center = False
+
+            if (not no_update) and (not center):
+                #obs[28:30] = action[:2]
+                #print('--')
+                #print(obs)
+                #print(action)
+                xf = action[:2]
+
+                xf[0] = np.maximum(margin+mallet_r, xf[0])
+                xf[0] = np.minimum(table_bounds[0]/2-mallet_r-margin, xf[0])
+
+                xf[1] = np.maximum(margin+mallet_r, xf[1])
+                xf[1] = np.minimum(table_bounds[1]-margin-mallet_r, xf[1])
+                
+                if ((xf[0] < (mallet_r + 2*puck_r + 0.01)) & (obs[0] < obs[20])):
+                    xf[0] = mallet_r + 2*puck_r + 0.01
+                if ((xf[1] < (mallet_r + 2*puck_r + 0.01)) & (obs[1] < obs[21])):
+                    xf[1] = mallet_r + 2*puck_r + 0.01
+                elif ((xf[1] > (table_bounds[1] - mallet_r - 2*puck_r - 0.01)) & (obs[1] > obs[21])):
+                    xf[1] = table_bounds[1] - mallet_r - 2*puck_r - 0.01
+
+                Vo = action[2] * Vmax * np.array([1+action[3],1-action[3]])
+                
+                MAX_ACTION_VOLTAGE = 22.0 # This is the feed forward voltage only! Actual voltage adds feedback.
+                Vo[0] = np.minimum(Vo[0], MAX_ACTION_VOLTAGE)
+                Vo[1] = np.minimum(Vo[1], MAX_ACTION_VOLTAGE)
+                obs[28:30] = xf
+                obs[30:32] = Vo
+                #print("A")
+                #print(xf)
+                #print(Vo)
+                
+                #Vo[0] = 7
+                #Vo[1] = 7
+                #obs[28:32] = np.concatenate([xf, Vo], axis=0)
+                
+                time_passed = time.perf_counter() - timer1
+                timer1 = time.perf_counter()
+                pos, vel, acc = ap.get_IC(time_passed)
+
+                #new_pos = pos + vel * dt + 0.5 * acc * dt**2
+                #new_vel = vel + acc * dt
+                data = ap.update_path(pos, vel, acc, xf, Vo)
+                ser.write(b'\n' + data + b'\n')
+            
+            image = cam.GetNextImage()
+            img = image.GetData().reshape(img_shape)
+            _, visable = track.process_frame(img)
+            image.Release()
+            
+            puck_hidden_buffer.append(not visable)
+
+            # === DATA LOGGING ===
+            # TODO: Figure out why Hudson was logging at end of loop also.
+            if True:
+                get_mallet(ser)
+                pos, vel, acc = get_init_conditions()
+                    
+                new_time = time.perf_counter()
+                time_diff = new_time - prev_time
+                prev_time = new_time
+                
+                recording_data[idx,:4] = track.past_data.get()[:4]
+                recording_data[idx,4:6] = pos
+                recording_data[idx,6:8] = vel
+                recording_data[idx,8] = time_diff
+                idx += 1
+                
+                if idx == len(recording_data):
+                    save_data(recording_data, log_file_path)
+                    print("Filled data buffer. Game ended.")
+                    print("SIGNAL END")
+                    break
+            # ======
+    except KeyboardInterrupt:
+        print("Keyboard interrupt... saving data to file.")
+        save_data(recording_data, log_file_path)
+        print("Done saving data to: " + log_file_path)
+        cam.EndAcquisition()
+        sys.exit(0)
             
     cam.EndAcquisition()
 
