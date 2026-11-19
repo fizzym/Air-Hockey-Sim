@@ -1,0 +1,10 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Video written by Air_hockey_sim_vectorized.py at import time
+/TableV2_Model*.avi
