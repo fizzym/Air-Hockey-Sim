@@ -1,0 +1,20 @@
+# Tested with Python 3.12 on Linux (CPU only).
+#
+# torch is pinned to the CPU-only build, which is much smaller than the default
+# CUDA build. On a machine with an NVIDIA GPU, delete the --extra-index-url line
+# and change the torch pin to: torch==2.15.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+numpy==2.5.5
+scipy==1.18.1
+shapely==2.2.0
+opencv-python==5.1.0.95
+pygame==2.6.1
+
+torch==2.15.0+cpu
+# torchrl 0.10.x is the newest release that still provides the BoundedTensorSpec
+# and CompositeSpec names imported by the training scripts.
+torchrl==0.10.1
+tensordict==0.10.0
+
+perlin-numpy @ git+https://github.com/pvigier/perlin-numpy@5e26837db14042e51166eb6cad4c0df2c1907016
