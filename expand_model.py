@@ -1,4 +1,7 @@
 import torch
+
+# Use the GPU when one is available, otherwise fall back to the CPU.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import torch.nn as nn
 from torchrl.modules import ProbabilisticActor, TanhNormal, ValueOperator, MLP, QValueActor, EGreedyWrapper, SafeProbabilisticModule
 import numpy as np
@@ -124,7 +127,7 @@ value_module = ValueOperator(
 )
 
 if load_filepath is not None:
-    checkpoint = torch.load(load_filepath, map_location='cuda')
+    checkpoint = torch.load(load_filepath, map_location=DEVICE)
     policy_module.load_state_dict(checkpoint['policy_state_dict'])
     value_module.load_state_dict(checkpoint['value_state_dict'])
 

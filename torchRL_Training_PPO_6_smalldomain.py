@@ -1,4 +1,7 @@
 import torch
+
+# Use the GPU when one is available, otherwise fall back to the CPU.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
@@ -123,8 +126,8 @@ policy_module = TensorDictModule(
     policy_net, in_keys=["observation"], out_keys=["loc", "scale"]
 )
 
-low = torch.tensor([mallet_r+0.01, mallet_r+0.01, 0, -1], dtype=torch.float32).to('cuda')
-high = torch.tensor([bounds[0]/2-mallet_r-0.01, bounds[1] - mallet_r-0.01, 1, 1], dtype=torch.float32).to('cuda')
+low = torch.tensor([mallet_r+0.01, mallet_r+0.01, 0, -1], dtype=torch.float32).to(DEVICE)
+high = torch.tensor([bounds[0]/2-mallet_r-0.01, bounds[1] - mallet_r-0.01, 1, 1], dtype=torch.float32).to(DEVICE)
 
 if train:
     policy_module = ProbabilisticActor(
@@ -137,7 +140,7 @@ if train:
         },
         default_interaction_type=tensordict.nn.InteractionType.RANDOM,
         return_log_prob=True,
-    ).to('cuda')
+    ).to(DEVICE)
 else:
     policy_module = ProbabilisticActor(
         module=policy_module,
@@ -149,7 +152,7 @@ else:
         },
         return_log_prob=True,
         #default_interaction_type=tensordict.nn.InteractionType.RANDOM,
-    ).to('cuda')
+    ).to(DEVICE)
 
             #"low": torch.tensor([mallet_r+0.011, mallet_r+0.011, 0, -1], dtype=torch.float32),
             #"high": torch.tensor([bounds[0]/2-mallet_r-0.011, bounds[1] - mallet_r-0.011, 1, 1],
@@ -177,7 +180,7 @@ value_module = ValueOperator(
     module=value_net,
     in_keys=["observation"],
     out_keys=["state_value"]
-).to('cuda')
+).to(DEVICE)
 
 gae_module = GAE(
         gamma=gamma,
@@ -185,7 +188,7 @@ gae_module = GAE(
         value_network=value_module,
         average_gae=False,  # Normalize advantages
         differentiable=False
-    ).to('cuda')
+    ).to(DEVICE)
 
 #policy_optimizer = torch.optim.Adam(policy_module.parameters(), lr=lr_policy)
 #value_optimizer = torch.optim.Adam(value_module.parameters(), lr=lr_value)
@@ -197,13 +200,13 @@ loss_module = ClipPPOLoss(
         entropy_bonus=True,
         entropy_coef=entropy_coeff,
         normalize_advantage=True
-    ).to('cuda')
+    ).to(DEVICE)
 
 optimizer_policy = torch.optim.Adam(policy_module.parameters(), lr=lr_policy)
 optimizer_value = torch.optim.Adam(value_module.parameters(), lr=lr_value)
 
 if load_filepath is not None:
-    checkpoint = torch.load(load_filepath, map_location='cuda')
+    checkpoint = torch.load(load_filepath, map_location=DEVICE)
     policy_module.load_state_dict(checkpoint['policy_state_dict'])
     value_module.load_state_dict(checkpoint['value_state_dict'])
     #optimizer.load_state_dict(checkpoint['optim_state_dict'])
@@ -211,12 +214,17 @@ if load_filepath is not None:
     #optimizer_value.load_state_dict(checkpoint['value_optim_state_dict'])
 
 #if second_actor_filepath is not None:
-#    checkpoint = torch.load(second_actor_filepath, map_location='cuda')
+#    checkpoint = torch.load(second_actor_filepath, map_location=DEVICE)
 #    policy_module2.load_state_dict(checkpoint['policy_state_dict'])
 
 envs = 2048 #2048
 if not train:
     envs = 1
+# Training with 2048 parallel games is too slow on a CPU, so use fewer.
+CPU_ENVS = 64
+if DEVICE.type == "cpu" and envs > CPU_ENVS:
+    print(f"No CUDA GPU found: running {CPU_ENVS} games in parallel instead of {envs}.")
+    envs = CPU_ENVS
 
 # Generate 2D low-frequency Perlin noise
 mallet_init = np.array([[0.25, 0.5], [0,0]])
@@ -658,7 +666,7 @@ if train:
 
         for timestep in range(sim_steps):
             if second_actor_filepath is None:
-                tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to('cuda')
+                tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
 
                 policy_out = policy_module(tensor_obs)
                 actions = policy_out["action"].detach().to('cpu')
@@ -668,7 +676,7 @@ if train:
                 actions_np = actions.numpy()
             else:
                 #print(past_obs[envs,-2])
-                tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to('cuda')
+                tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
 
                 policy_out = policy_module(tensor_obs)
                 actions = policy_out["action"].detach().to('cpu')
@@ -1107,7 +1115,7 @@ if train:
         for trajectory_td in trajectories:
             #if torch.sum(trajectory_td['next', 'reward']) < -200:
             #    print(trajectory_td['next', 'reward'])
-            trajectory_td = trajectory_td.to('cuda')
+            trajectory_td = trajectory_td.to(DEVICE)
 
             # Compute GAE advantages and returns
             with torch.no_grad():
@@ -1267,7 +1275,7 @@ if train:
             print(losses.mean())
         """
 
-        train_data = batch_td.to('cuda') #[:int(batch_td.batch_size[0] * 0.95)]
+        train_data = batch_td.to(DEVICE) #[:int(batch_td.batch_size[0] * 0.95)]
         #val_data = batch_td[int(batch_td.batch_size[0]*0.95):]
 
         del batch_td
@@ -1285,7 +1293,7 @@ if train:
             for i in range(num_batches-1):
                 start_idx = i * batch_size
                 end_idx = min((i + 1) * batch_size, train_data.batch_size[0])
-                mini_batch = train_data[start_idx:end_idx] #.to('cuda')
+                mini_batch = train_data[start_idx:end_idx] #.to(DEVICE)
 
                 loss_vals = loss_module(mini_batch)
                 loss = loss_vals["loss_objective"] + loss_vals["loss_critic"] + loss_vals["loss_entropy"]
@@ -1322,7 +1330,7 @@ if train:
             for i in range(num_batches):
                 start_idx = i * batch_size
                 end_idx = min((i + 1) * batch_size, val_data.batch_size[0])
-                mini_batch = val_data[start_idx:end_idx].to('cuda')
+                mini_batch = val_data[start_idx:end_idx].to(DEVICE)
 
                 loss_vals = loss_module(mini_batch)
                 loss = loss_vals["loss_objective"] + loss_vals["loss_critic"] + loss_vals["loss_entropy"]
@@ -1363,7 +1371,7 @@ for timestep in range(sim_steps):
     if timestep % 60 == 0:
         print(int(timestep/60))
     if second_actor_filepath is None:
-        tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to('cuda')
+        tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
 
         policy_out = policy_module(tensor_obs)
         actions = policy_out["action"].detach().to('cpu')
@@ -1373,7 +1381,7 @@ for timestep in range(sim_steps):
         actions_np = actions.numpy()
     else:
         #print(past_obs[envs,-2])
-        tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to('cuda')
+        tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
 
         policy_out = policy_module(tensor_obs)
         actions = policy_out["action"].detach().to('cpu')

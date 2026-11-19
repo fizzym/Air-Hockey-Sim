@@ -1,4 +1,7 @@
 import torch
+
+# Use the GPU when one is available, otherwise fall back to the CPU.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
@@ -221,7 +224,7 @@ policy_module = ProbabilisticActor(
     },
     default_interaction_type=tensordict.nn.InteractionType.RANDOM,
     return_log_prob=True,
-).to('cuda')
+).to(DEVICE)
 
 #value_net = ValueDense(obs_dim)
 value_net = nn.Sequential(
@@ -247,11 +250,11 @@ value_module = ValueOperator(
     module=value_net,
     in_keys=["observation"],
     out_keys=["state_value"]
-).to('cuda')
+).to(DEVICE)
 
 advantage_module = GAE(
     gamma=gamma, lmbda=lmbda, value_network=value_module
-).to('cuda')
+).to(DEVICE)
 
 loss_module = ClipPPOLoss(
     actor_network=policy_module,
@@ -259,13 +262,13 @@ loss_module = ClipPPOLoss(
     clip_epsilon=epsilon,
     entropy_bonus=True, 
     entropy_coef=entropy_coeff,
-    ).to('cuda')
+    ).to(DEVICE)
 
 policy_optimizer = torch.optim.Adam(policy_module.parameters(), lr=lr_policy)
 value_optimizer = torch.optim.Adam(value_module.parameters(), lr=lr_value)
 
 if load_filepath is not None:
-    checkpoint = torch.load(load_filepath, map_location='cuda')
+    checkpoint = torch.load(load_filepath, map_location=DEVICE)
     policy_module.load_state_dict(checkpoint['policy_state_dict'])
     value_module.load_state_dict(checkpoint['value_state_dict'])
     policy_optimizer.load_state_dict(checkpoint['optim_policy_state_dict'])
@@ -274,6 +277,11 @@ if load_filepath is not None:
 envs = 2048 #2048
 if not train:
     envs = 1
+# Training with 2048 parallel games is too slow on a CPU, so use fewer.
+CPU_ENVS = 64
+if DEVICE.type == "cpu" and envs > CPU_ENVS:
+    print(f"No CUDA GPU found: running {CPU_ENVS} games in parallel instead of {envs}.")
+    envs = CPU_ENVS
 
 # Generate 2D low-frequency Perlin noise
 mallet_init = np.array([[0.25, 0.5], [0,0]])
@@ -575,7 +583,7 @@ if train:
         print(update)
         print("simulating...")
         for timestep in range(13):
-            tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to('cuda')
+            tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
 
             policy_out = policy_module(tensor_obs)
             actions = policy_out["action"].detach().to('cpu')
@@ -876,7 +884,7 @@ if train:
                 
         print("training...")
         for i in range(25):
-            batch = replay_buffer.sample(batch_size).to('cuda')
+            batch = replay_buffer.sample(batch_size).to(DEVICE)
             
             t_obs = batch["observation"]
             t_action = batch["action"]
@@ -917,7 +925,7 @@ if train:
                     "terminated": t_done.clone().detach()
                 }, batch_size=[batch_size]),
                 "sample_log_prob": t_log_prob.clone().detach()
-            }, batch_size=[batch_size]).to('cuda')
+            }, batch_size=[batch_size]).to(DEVICE)
 
             with torch.no_grad():
                 advantage_module(tensordict_data)
@@ -955,7 +963,7 @@ if train:
                     "terminated": t_done.clone().detach()
                 }, batch_size=[batch_size]),
                 "sample_log_prob": t_log_prob.clone().detach()
-            }, batch_size=[batch_size]).to('cuda')
+            }, batch_size=[batch_size]).to(DEVICE)
 
             with torch.no_grad():
                 advantage_module(tensordict_data)
@@ -983,7 +991,7 @@ if train:
 
 reward_sum = np.zeros((2*envs))
 for timestep in range(100000):
-    tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to('cuda')
+    tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
 
     policy_out = policy_module(tensor_obs)
     value_out = value_module(tensor_obs)

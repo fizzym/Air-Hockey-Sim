@@ -1,4 +1,7 @@
 import torch
+
+# Use the GPU when one is available, otherwise fall back to the CPU.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
@@ -22,8 +25,8 @@ import torch.nn.functional as F4
 import copy
 from torchrl.data import PrioritizedReplayBuffer, LazyTensorStorage
 
-load_filepath = "checkpoints\\SAC_241.pth" #241
-save_filepath = "checkpoints\\SAC_241.pth" #Best is 12, 15, 22, 44, 76, 103, 121, 134, 142, 160, 165, 178
+load_filepath = "checkpoints/SAC_241.pth" #241
+save_filepath = "checkpoints/SAC_241.pth" #Best is 12, 15, 22, 44, 76, 103, 121, 134, 142, 160, 165, 178
 train = False
 #182, 174
 # Simulation parameters
@@ -181,12 +184,12 @@ for q in Q_modules:
 for i in range(2):
     policy_modules[i] = TensorDictModule(
                             policy_modules[i], in_keys=["observation"], out_keys=["loc", "scale"]
-                        ).to('cuda')
+                        ).to(DEVICE)
 
 for i in range(2):
     example_policy_modules[i] = TensorDictModule(
                             example_policy_modules[i], in_keys=["observation"], out_keys=["loc", "scale"]
-                        ).to('cuda')
+                        ).to(DEVICE)
 
 class QNetWrapper(nn.Module):
     def __init__(self, net):
@@ -203,13 +206,13 @@ for i in range(4):
                         QNetWrapper(Q_modules[i]), 
                         in_keys=["observation", "action"], 
                         out_keys=["q_value"]
-                    ).to('cuda')
+                    ).to(DEVICE)
     Q_modules[i] = TensorDictModule(
                         Q_modules[i], in_keys=["observation", "action"], out_keys=["q_value"]
-                    ).to('cuda')
+                    ).to(DEVICE)
 
-low = torch.tensor([mallet_r+0.01, mallet_r+0.01, 0, -1, 0], dtype=torch.float32).to('cuda')
-high = torch.tensor([bounds[0]/2-mallet_r-0.01, bounds[1] - mallet_r-0.01, 1, 1, 1], dtype=torch.float32).to('cuda')
+low = torch.tensor([mallet_r+0.01, mallet_r+0.01, 0, -1, 0], dtype=torch.float32).to(DEVICE)
+high = torch.tensor([bounds[0]/2-mallet_r-0.01, bounds[1] - mallet_r-0.01, 1, 1, 1], dtype=torch.float32).to(DEVICE)
 
 lows = [[mallet_r+0.01, mallet_r+0.01, 0, -1, 0],
         [mallet_r+0.01, mallet_r+0.01, 0, -1, 0],
@@ -231,7 +234,7 @@ for i in range(2):
             },
             default_interaction_type=tensordict.nn.InteractionType.RANDOM,
             return_log_prob=True,
-        ).to('cuda')
+        ).to(DEVICE)
         example_policy_modules[i] = ProbabilisticActor(
             module=example_policy_modules[i],
             in_keys=["loc", "scale"],
@@ -242,7 +245,7 @@ for i in range(2):
             },
             default_interaction_type=tensordict.nn.InteractionType.RANDOM,
             return_log_prob=True,
-        ).to('cuda')
+        ).to(DEVICE)
     else:
         if i == 0:
             policy_modules[i] = ProbabilisticActor( 
@@ -255,7 +258,7 @@ for i in range(2):
                 },
                 #default_interaction_type=tensordict.nn.InteractionType.RANDOM,
                 return_log_prob=True,
-            ).to('cuda')
+            ).to(DEVICE)
         else:
             policy_modules[i] = ProbabilisticActor( 
                 module=policy_modules[i],
@@ -267,7 +270,7 @@ for i in range(2):
                 },
                 #default_interaction_type=tensordict.nn.InteractionType.RANDOM,
                 return_log_prob=True,
-            ).to('cuda')
+            ).to(DEVICE)
         example_policy_modules[i] = ProbabilisticActor(
             module=example_policy_modules[i],
             in_keys=["loc", "scale"],
@@ -278,7 +281,7 @@ for i in range(2):
             },
             default_interaction_type=tensordict.nn.InteractionType.RANDOM,
             return_log_prob=True,
-        ).to('cuda')
+        ).to(DEVICE)
 
 target_entropy = [-float(6.0), -float(4.0)]
 
@@ -288,9 +291,9 @@ target_entropy = [-float(6.0), -float(4.0)]
 log_alphas = []
 for j in range(2):
     if j == 0:
-        log_alphas.append(torch.full((1,), -5.5, requires_grad=True, device='cuda'))
+        log_alphas.append(torch.full((1,), -5.5, requires_grad=True, device=DEVICE))
     else:
-        log_alphas.append(torch.full((1,), -5.5, requires_grad=True, device='cuda'))
+        log_alphas.append(torch.full((1,), -5.5, requires_grad=True, device=DEVICE))
 
 alpha_optimizers = []
 for i in range(2):
@@ -306,7 +309,7 @@ for i in range(2):
 
 Q_modules_target = []
 for i in range(4):
-    Q_modules_target.append(copy.deepcopy(Q_modules[i]).to('cuda'))
+    Q_modules_target.append(copy.deepcopy(Q_modules[i]).to(DEVICE))
 
 class ScaleGrad(torch.autograd.Function):
     @staticmethod
@@ -318,7 +321,7 @@ class ScaleGrad(torch.autograd.Function):
         return grad_output * ctx.scale, None
 
 #if load_filepath is not None:
-#    checkpoint = torch.load(load_filepath, map_location='cuda')
+#    checkpoint = torch.load(load_filepath, map_location=DEVICE)
 #    policy_module.load_state_dict(checkpoint['policy_state_dict'])
 #    value_module.load_state_dict(checkpoint['value_state_dict'])
 #    
@@ -338,7 +341,7 @@ def update_sac_agent(i, batch_size, gamma=0.99, tau=0.005):
     log_alpha = log_alphas[i]
     
     batch, info = buffer.sample(batch_size, return_info=True)
-    batch = batch.to('cuda')
+    batch = batch.to(DEVICE)
     next_batch = batch.get("next")
     
     # --- 1. Critic Update ---
@@ -434,10 +437,10 @@ def save_checkpoint(path):
     print(f"Checkpoint saved to {path}")
 
 def load_checkpoint(path):
-    checkpoint = torch.load(path)
+    checkpoint = torch.load(path, map_location=DEVICE)
 
-    checkpoint_straight = torch.load("checkpoints\\SAC_212.pth")
-    checkpoint_bounce = torch.load("checkpoints\\SAC_237.pth")
+    checkpoint_straight = torch.load("checkpoints/SAC_212.pth", map_location=DEVICE)
+    checkpoint_bounce = torch.load("checkpoints/SAC_237.pth", map_location=DEVICE)
     
     for i in range(2):
         policy_modules[i].load_state_dict(checkpoint['policies'][i])
@@ -499,6 +502,11 @@ def sample_mallet_delay(n_samples=1):
 envs = 2048 #2048
 if not train:
     envs = 3
+# Training with 2048 parallel games is too slow on a CPU, so use fewer.
+CPU_ENVS = 64
+if DEVICE.type == "cpu" and envs > CPU_ENVS:
+    print(f"No CUDA GPU found: running {CPU_ENVS} games in parallel instead of {envs}.")
+    envs = CPU_ENVS
 
 # Generate 2D low-frequency Perlin noise
 mallet_init = np.array([[0.25, 0.5], [0,0]])
@@ -940,15 +948,15 @@ if train:
                 flipped = np.random.random((2*envs,)) > 0.5
                 past_obs[flipped] = apply_symmetry(past_obs[flipped])
 
-                tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to('cuda')
+                tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
                 
                 policy_out = policy_modules[0](tensor_obs)
                 actions = policy_out["action"].detach().to('cpu')
 
                 #straight_shot_mask[self_play-128:self_play+256+128] = np.logical_xor(straight_shot_mask[self_play-128:self_play+256+128], np.random.random((512,)) > 0.99)
 
-                #tensor_obs_straight = TensorDict({"observation": torch.tensor(past_obs[straight_shot_mask], dtype=torch.float32)}).to('cuda')
-                #tensor_obs_bounce = TensorDict({"observation": torch.tensor(past_obs[np.logical_not(straight_shot_mask) & alternate_model_mask], dtype=torch.float32)}).to('cuda')
+                #tensor_obs_straight = TensorDict({"observation": torch.tensor(past_obs[straight_shot_mask], dtype=torch.float32)}).to(DEVICE)
+                #tensor_obs_bounce = TensorDict({"observation": torch.tensor(past_obs[np.logical_not(straight_shot_mask) & alternate_model_mask], dtype=torch.float32)}).to(DEVICE)
 
                 #policy_straight_out = example_policy_modules[0](tensor_obs_straight)
                 #actions[straight_shot_mask] = policy_straight_out["action"].detach().to('cpu')
@@ -958,7 +966,7 @@ if train:
 
                 actions_np = actions.numpy()    
 
-                def_tensor_obs = TensorDict({"observation": torch.tensor(past_obs[envs+self_play:], dtype=torch.float32)}).to('cuda')
+                def_tensor_obs = TensorDict({"observation": torch.tensor(past_obs[envs+self_play:], dtype=torch.float32)}).to(DEVICE)
                 def_out = policy_modules[1](def_tensor_obs)
                 def_actions = def_out["action"].detach().to('cpu')
 
@@ -1438,7 +1446,7 @@ for update in range(500000):  # Training loop
         with torch.no_grad():
             #past_obs[:, 21] += random_offset
             #past_obs[:, 25] += random_offset
-            tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to('cuda')
+            tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
 
             policy_out = policy_modules[0](tensor_obs)
             actions = policy_out["action"].detach().to('cpu')
@@ -1447,7 +1455,7 @@ for update in range(500000):  # Training loop
 
             actions_np = actions.numpy()    
             """
-            def_tensor_obs = TensorDict({"observation": torch.tensor(past_obs[envs+self_play:], dtype=torch.float32)}).to('cuda')
+            def_tensor_obs = TensorDict({"observation": torch.tensor(past_obs[envs+self_play:], dtype=torch.float32)}).to(DEVICE)
 
             def_out = policy_modules[1](def_tensor_obs)
             def_actions = def_out["action"].detach().to('cpu')
