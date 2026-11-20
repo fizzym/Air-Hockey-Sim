@@ -348,7 +348,7 @@ def update_sac_agent(i, batch_size, gamma=0.99, tau=0.005):
     with torch.no_grad():
         actor(next_batch)
         
-        next_log_prob = torch.clamp(next_batch.get("sample_log_prob"), -7, 100)
+        next_log_prob = torch.clamp(next_batch.get("action_log_prob"), -7, 100)
         #gate_value = next_batch.get("action")[:, 4:5]
         #entropy_mask = (1-gate_value)
         
@@ -378,7 +378,7 @@ def update_sac_agent(i, batch_size, gamma=0.99, tau=0.005):
     
       
     actor_td = actor(batch)
-    log_prob = torch.clamp(actor_td.get("sample_log_prob"), -7, 100)
+    log_prob = torch.clamp(actor_td.get("action_log_prob"), -7, 100)
     
     q1_pi = q1(actor_td).get("q_value")
     q2_pi = q2(actor_td).get("q_value")
@@ -734,7 +734,8 @@ save_num = 0
 miss_mask = np.empty((2*envs))
 
 if train:
-    self_play = 512
+    # A quarter of the games are self-play (512 of 2048); the rest face other opponents.
+    self_play = envs // 4
 else:
     self_play = 1
 
@@ -787,9 +788,13 @@ action_skips = np.zeros((envs-self_play,), dtype=np.int8)
 shot_counts = [0,0]
 if train:
     straight_shot_mask = np.zeros((2*envs,), dtype=np.bool_)
-    straight_shot_mask[self_play-128:self_play+256+128] = np.random.random((512,)) > 0.5
+    # Games played against the frozen straight/bank-shot models: 512 games starting
+    # at index 384 when envs = 2048, scaled for other game counts.
+    alt_start = self_play - envs // 16
+    alt_count = envs // 4
+    straight_shot_mask[alt_start:alt_start+alt_count] = np.random.random((alt_count,)) > 0.5
     alternate_model_mask = np.zeros((2*envs,), dtype=np.bool_)
-    alternate_model_mask[self_play-128:self_play+256+128] = True
+    alternate_model_mask[alt_start:alt_start+alt_count] = True
 #move timeline to first action time
 while True:
     img_idx = None

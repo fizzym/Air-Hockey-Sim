@@ -8,3 +8,6 @@ __pycache__/
 
 # Video written by Air_hockey_sim_vectorized.py at import time
 /TableV2_Model*.avi
+
+# Training checkpoints (copies of model_weights/ and new training output)
+/checkpoints/
