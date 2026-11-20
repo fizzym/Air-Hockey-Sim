@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Air Hockey Architecture</title>
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --surface: #ffffff;
+    --ink: #1d232b;
+    --muted: #5b6573;
+    --line: #dcd8cf;
+    --accent: #c2410c;
+    --accent-soft: #fdecdf;
+    --sim: #1d6fb8;
+    --sim-soft: #e3effa;
+    --rl: #6d3fc0;
+    --rl-soft: #eee7fa;
+    --hw: #2f7d4f;
+    --hw-soft: #e2f3e8;
+    --code-bg: #f2efe8;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --surface: #1b1f26; --ink: #e7e9ec; --muted: #9aa3ae; --line: #303742;
+      --accent: #f08a4b; --accent-soft: #3a2519; --sim: #6cb0ee; --sim-soft: #182a3c;
+      --rl: #b394f0; --rl-soft: #2a2140; --hw: #6fcf97; --hw-soft: #18301f; --code-bg: #232831;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171c; --surface: #1b1f26; --ink: #e7e9ec; --muted: #9aa3ae; --line: #303742;
+    --accent: #f08a4b; --accent-soft: #3a2519; --sim: #6cb0ee; --sim-soft: #182a3c;
+    --rl: #b394f0; --rl-soft: #2a2140; --hw: #6fcf97; --hw-soft: #18301f; --code-bg: #232831;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  header { padding-block: 56px 28px; border-bottom: 1px solid var(--line); }
+  .eyebrow { color: var(--accent); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: .78rem; margin: 0 0 8px; }
+  h1 { font-size: clamp(2rem, 5vw, 2.9rem); line-height: 1.12; margin: 0 0 14px; letter-spacing: -.02em; }
+  .lede { font-size: 1.15rem; color: var(--muted); max-width: 46em; margin: 0; }
+  nav { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 22px; font-size: .92rem; }
+  nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line); }
+  nav a:hover { border-color: var(--accent); }
+
+  section { padding-block: 44px 8px; }
+  h2 { font-size: 1.6rem; margin: 0 0 6px; letter-spacing: -.01em; }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: .4em; }
+  h3 { font-size: 1.08rem; margin: 28px 0 8px; }
+  p { margin: 0 0 14px; }
+  .sub { color: var(--muted); margin-bottom: 22px; }
+  a { color: var(--accent); }
+  code { font: .88em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: 14px 16px; border-radius: 8px; overflow-x: auto; font-size: .86rem; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+
+  figure { margin: 22px 0; }
+  figcaption { color: var(--muted); font-size: .88rem; margin-top: 8px; }
+  .diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; overflow-x: auto; }
+  .diagram svg { display: block; width: 100%; min-width: 640px; height: auto; }
+  img.photo { width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #fff; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; margin: 18px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card h4 { margin: 0 0 6px; font-size: 1rem; }
+  .card p, .card ul { margin: 0; font-size: .94rem; color: var(--muted); }
+  .card ul { padding-left: 18px; }
+  .card.hw { border-top: 3px solid var(--hw); }
+  .card.sim { border-top: 3px solid var(--sim); }
+  .card.rl { border-top: 3px solid var(--rl); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 26px 0 0; }
+  .stat { border-left: 3px solid var(--accent); padding: 2px 0 2px 12px; }
+  .stat b { display: block; font-size: 1.5rem; line-height: 1.2; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: .86rem; }
+
+  .table-wrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td code { white-space: nowrap; }
+
+  .note { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 16px; border-radius: 0 8px 8px 0; font-size: .94rem; margin: 18px 0; }
+  .note p:last-child { margin: 0; }
+  footer { margin-top: 48px; padding-block: 24px 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: .88rem; }
+
+  /* diagram text and shapes */
+  .d-text { fill: var(--ink); font: 13px system-ui, sans-serif; }
+  .d-small { fill: var(--muted); font: 11px system-ui, sans-serif; }
+  .d-title { fill: var(--ink); font: 600 14px system-ui, sans-serif; }
+  .d-line { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  .d-hw { fill: var(--hw-soft); stroke: var(--hw); stroke-width: 1.5; }
+  .d-sim { fill: var(--sim-soft); stroke: var(--sim); stroke-width: 1.5; }
+  .d-rl { fill: var(--rl-soft); stroke: var(--rl); stroke-width: 1.5; }
+  .d-acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .d-frame { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .d-arrowhead { fill: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <p class="eyebrow">Air-Hockey-Sim · architecture overview</p>
+    <h1>How the AI air hockey robot is built</h1>
+    <p class="lede">A Core-XY gantry plays air hockey against a human. A camera tracks the puck, a neural-network policy chooses where the mallet should go, and the policy was trained entirely in a custom simulator that models the real table closely enough to transfer zero-shot. This repository holds the simulator and the reinforcement-learning training code.</p>
+    <div class="stats">
+      <div class="stat"><b>~230×</b><span>simulation speed vs. real time (i5 CPU)</span></div>
+      <div class="stat"><b>120 fps</b><span>camera tracking, ~1 mm mean error</span></div>
+      <div class="stat"><b>60 Hz</b><span>control loop on the laptop</span></div>
+      <div class="stat"><b>2048</b><span>games simulated in parallel when training on a GPU</span></div>
+    </div>
+    <nav aria-label="Sections">
+      <a href="#system">1 · System</a>
+      <a href="#models">2 · Physical models</a>
+      <a href="#sim">3 · Simulator</a>
+      <a href="#rl">4 · Training</a>
+      <a href="#files">5 · File map</a>
+      <a href="#running">6 · Running it</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+<!-- 1. SYSTEM -->
+<section id="system">
+  <h2><span class="num">1</span>The system at a glance</h2>
+  <p class="sub">There are two halves. Offline, the policy is trained in simulation. Online, the trained network runs in a real-time loop on the physical table.</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 380" role="img" aria-labelledby="sys-t sys-d">
+        <title id="sys-t">System architecture</title>
+        <desc id="sys-d">Offline, the system identification models feed the vectorized simulator, which trains the SAC policy. The trained policy weights are deployed to the laptop in the real-time loop: camera, laptop, Blue Pill microcontroller, motors and gantry, with encoder feedback.</desc>
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+          </marker>
+        </defs>
+
+        <!-- offline frame -->
+        <rect x="10" y="10" width="420" height="360" rx="12" class="d-frame"/>
+        <text x="28" y="36" class="d-title">Offline · this repository</text>
+
+        <rect x="30" y="58" width="380" height="64" rx="8" class="d-acc"/>
+        <text x="46" y="82" class="d-text">System identification (measured on the real table)</text>
+        <text x="46" y="104" class="d-small">mallet transfer function · puck ODE · collisions · noise · delays</text>
+
+        <rect x="30" y="160" width="380" height="64" rx="8" class="d-sim"/>
+        <text x="46" y="184" class="d-text">Vectorized simulator</text>
+        <text x="46" y="206" class="d-small">Air_hockey_sim_vectorized.py · thousands of games in parallel</text>
+
+        <rect x="30" y="262" width="380" height="64" rx="8" class="d-rl"/>
+        <text x="46" y="286" class="d-text">RL training (SAC, earlier PPO)</text>
+        <text x="46" y="308" class="d-small">torchRL_Training_*.py · self-play + opponent pool</text>
+
+        <path d="M220 122 V156" class="d-line" marker-end="url(#ah)"/>
+        <path d="M140 224 V258" class="d-line" marker-end="url(#ah)"/>
+        <text x="148" y="246" class="d-small">observations, rewards</text>
+        <path d="M310 258 V228" class="d-line" marker-end="url(#ah)"/>
+        <text x="318" y="246" class="d-small">actions</text>
+
+        <!-- deploy arrow -->
+        <path d="M410 294 H445 V185 H476" class="d-line" marker-end="url(#ah)" stroke-dasharray="6 4"/>
+        <text x="200" y="350" class="d-small">trained policy weights are deployed →</text>
+
+        <!-- online frame -->
+        <rect x="460" y="10" width="430" height="360" rx="12" class="d-frame"/>
+        <text x="478" y="36" class="d-title">Online · physical table</text>
+
+        <rect x="480" y="58" width="180" height="56" rx="8" class="d-hw"/>
+        <text x="496" y="82" class="d-text">Camera, 120 fps</text>
+        <text x="496" y="101" class="d-small">retroreflective puck + LEDs</text>
+
+        <rect x="480" y="150" width="390" height="70" rx="8" class="d-rl"/>
+        <text x="496" y="174" class="d-text">Laptop (Ubuntu, real-time kernel), 60 Hz loop</text>
+        <text x="496" y="194" class="d-small">vision → policy network → path planner → feedforward</text>
+        <text x="496" y="210" class="d-small">voltage profile (accounts for command delay)</text>
+
+        <rect x="480" y="258" width="180" height="56" rx="8" class="d-hw"/>
+        <text x="496" y="282" class="d-text">STM32 Blue Pill</text>
+        <text x="496" y="301" class="d-small">feedforward + PID</text>
+
+        <rect x="690" y="258" width="180" height="56" rx="8" class="d-hw"/>
+        <text x="706" y="282" class="d-text">Motors + Core-XY</text>
+        <text x="706" y="301" class="d-small">2 motors, belts, encoders</text>
+
+        <rect x="690" y="58" width="180" height="56" rx="8" class="d-hw"/>
+        <text x="706" y="82" class="d-text">Table</text>
+        <text x="706" y="101" class="d-small">puck, mallets, human</text>
+
+        <path d="M570 114 V146" class="d-line" marker-end="url(#ah)"/>
+        <text x="578" y="135" class="d-small">frames</text>
+        <path d="M570 220 V254" class="d-line" marker-end="url(#ah)"/>
+        <text x="578" y="241" class="d-small">voltage curve (UART)</text>
+        <path d="M660 286 H686" class="d-line" marker-end="url(#ah)"/>
+        <path d="M870 280 H882 V86 H874" class="d-line" marker-end="url(#ah)"/>
+        <path d="M690 86 H664" class="d-line" marker-end="url(#ah)"/>
+        <path d="M740 314 V350 H600 V318" class="d-line" marker-end="url(#ah)"/>
+        <text x="612" y="344" class="d-small">encoder position (SPI)</text>
+      </svg>
+    </div>
+    <figcaption>The policy only ever sees simulated data during training. Everything in the online loop (noise, delays, motor response) was measured so the simulator could reproduce it.</figcaption>
+  </figure>
+
+  <div class="grid">
+    <div class="card hw"><h4>Hardware</h4><p>Core-XY gantry with two belt-driven motors and SPI encoders, controlled by an STM32 "Blue Pill". A 165 F supercapacitor stops supply sag during aggressive moves. The team later rebuilt it on a regulation table with an 80/20 frame.</p></div>
+    <div class="card hw"><h4>Vision</h4><p>Retroreflective tape on the puck, with an LED array placed next to the camera lens, gives a high-contrast image at 100 µs exposure. A multi-view calibration solves marker positions and table warp together. Contour matching keeps tracking the puck while the gantry beam partly covers it.</p></div>
+    <div class="card rl"><h4>Real-time loop</h4><p>Each cycle the laptop waits for a frame, reads the mallet position, runs the network, plans the path and sends a voltage curve to the Blue Pill. It takes 6–7 ms, run at 60 Hz for headroom, on isolated CPU cores.</p></div>
+  </div>
+</section>
+
+<!-- 2. MODELS -->
+<section id="models">
+  <h2><span class="num">2</span>Physical models the simulator is built on</h2>
+  <p class="sub">The simulator doesn't use a general-purpose physics engine. Its equations were fitted to measurements from the real table, and most of them can be solved exactly, which is what makes it fast.</p>
+
+  <div class="grid">
+    <div class="card sim">
+      <h4>Mallet: third-order motor model</h4>
+      <p>Motor voltage to mallet position is a third-order transfer function with six fitted constants <code>a1…a3</code>, <code>b1…b3</code>. In Core-XY these decouple into independent x and y systems:</p>
+      <p style="margin-top:8px"><code>V<sub>x</sub> = (2/R)[(a1−b1)x‴ + (a2−b2)x″ + (a3−b3)x′]</code></p>
+    </div>
+    <div class="card sim">
+      <h4>Puck: friction + drag ODE</h4>
+      <p><code>m·ẍ = −f − B·ẋ²</code>, fitted to tracked trajectories. It has a closed-form solution, so the puck's position at any time is a formula, with no numerical integration.</p>
+    </div>
+    <div class="card sim">
+      <h4>Collisions</h4>
+      <p>A 112-parameter network (outputs plus their uncertainty) maps incoming speed and angle to outgoing ones, for wall and mallet hits. <strong>Note:</strong> in this branch the network loading is commented out, and the simulator uses fixed restitution (0.94 wall, 0.8 mallet).</p>
+    </div>
+  </div>
+
+  <h3>A mallet move is a three-step voltage pulse</h3>
+  <p>The policy doesn't output raw voltages. Each action is a target position <code>x<sub>f</sub></code> and a voltage level <code>M<sub>V</sub></code>, turned into a bang-bang profile <code>V(t) = M<sub>V</sub>u(t) − 2M<sub>V</sub>u(t−t₁) + M<sub>V</sub>u(t−t₂)</code>. The simulator solves for the switch times <code>t₁</code> and <code>t₂</code> (<code>solve_a</code>, <code>update_path</code>), so every commanded path:</p>
+  <ul>
+    <li>can be carried out within the motor's voltage limits,</li>
+    <li>never drives the mallet into a wall,</li>
+    <li>has an exact formula for position and velocity at any time (<code>get_pos</code>, <code>get_xp</code>).</li>
+  </ul>
+</section>
+
+<!-- 3. SIM -->
+<section id="sim">
+  <h2><span class="num">3</span>The vectorized simulator</h2>
+  <p class="sub"><code>Air_hockey_sim_vectorized.py</code> keeps the state of N games in NumPy arrays and advances all of them together. Within each step, it jumps from one possible collision to the next instead of advancing in tiny fixed increments.</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 250" role="img" aria-labelledby="step-t step-d">
+        <title id="step-t">How one simulator step works</title>
+        <desc id="step-d">step(dt) repeatedly computes a lower bound on the time to the next collision for every active game, advances by that bound using closed-form solutions, resolves any collisions, and removes finished games from the active mask until the full dt has elapsed.</desc>
+        <defs>
+          <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+          </marker>
+        </defs>
+        <rect x="10" y="20" width="150" height="70" rx="8" class="d-rl"/>
+        <text x="24" y="48" class="d-text">take_action(x_f, V)</text>
+        <text x="24" y="70" class="d-small">plan paths for all mallets</text>
+
+        <rect x="200" y="20" width="160" height="70" rx="8" class="d-sim"/>
+        <text x="214" y="48" class="d-text">step(dt)</text>
+        <text x="214" y="70" class="d-small">all games active</text>
+
+        <rect x="400" y="20" width="200" height="70" rx="8" class="d-sim"/>
+        <text x="414" y="44" class="d-text">Lower bound on time</text>
+        <text x="414" y="62" class="d-text">to next collision</text>
+        <text x="414" y="80" class="d-small">per game, no collision missed</text>
+
+        <rect x="640" y="20" width="240" height="70" rx="8" class="d-sim"/>
+        <text x="654" y="44" class="d-text">Advance by that bound</text>
+        <text x="654" y="62" class="d-small">closed-form puck + mallet motion</text>
+        <text x="654" y="80" class="d-small">(update_puck)</text>
+
+        <rect x="640" y="140" width="240" height="70" rx="8" class="d-sim"/>
+        <text x="654" y="164" class="d-text">Resolve collisions</text>
+        <text x="654" y="182" class="d-small">walls, corners, goal mouth, mallets</text>
+        <text x="654" y="200" class="d-small">(corner_collision, puck_mallet_collision)</text>
+
+        <rect x="400" y="140" width="200" height="70" rx="8" class="d-sim"/>
+        <text x="414" y="164" class="d-text">Drop finished games</text>
+        <text x="414" y="182" class="d-small">dt reached → leave the mask</text>
+        <text x="414" y="200" class="d-small">others loop again</text>
+
+        <rect x="200" y="140" width="160" height="70" rx="8" class="d-acc"/>
+        <text x="214" y="164" class="d-text">Return state</text>
+        <text x="214" y="182" class="d-small">mallet/puck pos + vel,</text>
+        <text x="214" y="200" class="d-small">goal-line crossings</text>
+
+        <path d="M160 55 H196" class="d-line" marker-end="url(#ah2)"/>
+        <path d="M360 55 H396" class="d-line" marker-end="url(#ah2)"/>
+        <path d="M600 55 H636" class="d-line" marker-end="url(#ah2)"/>
+        <path d="M760 90 V136" class="d-line" marker-end="url(#ah2)"/>
+        <path d="M640 175 H604" class="d-line" marker-end="url(#ah2)"/>
+        <path d="M500 140 V94" class="d-line" marker-end="url(#ah2)"/>
+        <text x="508" y="122" class="d-small">still active</text>
+        <path d="M400 175 H364" class="d-line" marker-end="url(#ah2)"/>
+        <text x="368" y="232" class="d-small">all done</text>
+      </svg>
+    </div>
+    <figcaption>Steps are long when nothing is close to colliding and short near an impact. Because motion between collisions is an exact formula, no accuracy is lost by taking a long step.</figcaption>
+  </figure>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Function</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>initalize(envs, …, ab_vars, puck_inits)</code></td><td>Allocate state for <code>envs</code> games. Takes each player's motor constants and draws per-game puck mass, drag and friction at random. (The name is spelled this way in the code.)</td></tr>
+        <tr><td><code>take_action(x_f, Vo)</code></td><td>Plan a new path for every mallet from its current position, velocity and acceleration.</td></tr>
+        <tr><td><code>step(dt, calculate_cross_left)</code></td><td>Advance all games by <code>dt</code>. Returns mallet and puck positions and velocities, plus when the puck crossed the centre line.</td></tr>
+        <tr><td><code>step_noM(…)</code></td><td>Roll the puck forward as if the mallets weren't there. Used by the reward to ask whether a shot would have gone in.</td></tr>
+        <tr><td><code>check_state()</code></td><td>Return an array of games in an invalid state (puck out of bounds or inside a mallet) so they can be reset.</td></tr>
+        <tr><td><code>check_goal()</code> · <code>reset_sim(index)</code></td><td>Detect goals and reset selected games.</td></tr>
+        <tr><td><code>display_state(i)</code></td><td>Draw game <code>i</code> with OpenCV and write frames to <code>TableV2_Model200.avi</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <figure>
+    <img class="photo" src="../195_vid.gif" alt="Simulated game: two mallets and a puck on a top-down table, an agent playing against itself.">
+    <figcaption>An agent playing itself in the simulator.</figcaption>
+  </figure>
+</section>
+
+<!-- 4. RL -->
+<section id="rl">
+  <h2><span class="num">4</span>Training the policy</h2>
+  <p class="sub">The training scripts wrap the simulator in a loop driven by camera, mallet-reading and action events, so the agent sees the world with the same delays and noise as on the real table.</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 260" role="img" aria-labelledby="rl-t rl-d">
+        <title id="rl-t">Training loop</title>
+        <desc id="rl-d">The simulator is advanced to the next event: a camera frame, a mallet reading, or an action. Observations pass through noise and delay buffers into the policy and opponent networks. Actions go back into the simulator, and transitions with rewards are stored in a replay buffer used for SAC updates.</desc>
+        <defs>
+          <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+          </marker>
+        </defs>
+        <rect x="10" y="90" width="170" height="80" rx="8" class="d-sim"/>
+        <text x="24" y="116" class="d-text">Simulator</text>
+        <text x="24" y="136" class="d-small">step to next event:</text>
+        <text x="24" y="152" class="d-small">frame · mallet · action</text>
+
+        <rect x="220" y="20" width="200" height="80" rx="8" class="d-acc"/>
+        <text x="234" y="46" class="d-text">Make it realistic</text>
+        <text x="234" y="66" class="d-small">white + Perlin noise, beam</text>
+        <text x="234" y="82" class="d-small">occlusion, randomized delays</text>
+
+        <rect x="460" y="20" width="200" height="80" rx="8" class="d-acc"/>
+        <text x="474" y="46" class="d-text">Observation buffers</text>
+        <text x="474" y="66" class="d-small">puck + opponent at frames</text>
+        <text x="474" y="82" class="d-small">0, 1, 2, 5, 11 ago</text>
+
+        <rect x="700" y="20" width="190" height="80" rx="8" class="d-rl"/>
+        <text x="714" y="46" class="d-text">Policy + opponent</text>
+        <text x="714" y="66" class="d-small">main policy, defender,</text>
+        <text x="714" y="82" class="d-small">scripted or past models</text>
+
+        <rect x="700" y="160" width="190" height="80" rx="8" class="d-rl"/>
+        <text x="714" y="186" class="d-text">Action → path</text>
+        <text x="714" y="206" class="d-small">x_f, voltage, x/y split,</text>
+        <text x="714" y="222" class="d-small">+ execution noise</text>
+
+        <rect x="400" y="160" width="230" height="80" rx="8" class="d-rl"/>
+        <text x="414" y="186" class="d-text">Replay buffer → SAC update</text>
+        <text x="414" y="206" class="d-small">2 policies, 4 Q-nets + targets,</text>
+        <text x="414" y="222" class="d-small">learned entropy coefficient</text>
+
+        <path d="M180 110 L216 76" class="d-line" marker-end="url(#ah3)"/>
+        <path d="M420 60 H456" class="d-line" marker-end="url(#ah3)"/>
+        <path d="M660 60 H696" class="d-line" marker-end="url(#ah3)"/>
+        <path d="M795 100 V156" class="d-line" marker-end="url(#ah3)"/>
+        <path d="M700 200 H634" class="d-line" marker-end="url(#ah3)"/>
+        <text x="640" y="192" class="d-small">transitions</text>
+        <path d="M720 240 V252 H95 V174" class="d-line" marker-end="url(#ah3)"/>
+        <text x="300" y="248" class="d-small">take_action(x_f, V) after the measured command delay</text>
+        <path d="M500 160 Q 600 130 760 104" class="d-line" marker-end="url(#ah3)" stroke-dasharray="5 4"/>
+        <text x="404" y="146" class="d-small">updated weights</text>
+      </svg>
+    </div>
+  </figure>
+
+  <h3>The decision problem (SAC version)</h3>
+  <div class="grid">
+    <div class="card rl">
+      <h4>Observation, 39 values</h4>
+      <ul>
+        <li>Puck and opponent-mallet positions from 5 past camera frames (about 8–100 ms old), so the network can work out velocity itself</li>
+        <li>Its own delayed mallet position and velocity</li>
+        <li>Its previous action</li>
+        <li>Its own motor constants <code>a1…b3</code> (the opponent's are hidden)</li>
+      </ul>
+    </div>
+    <div class="card rl">
+      <h4>Action, 5 values</h4>
+      <ul>
+        <li>Target position <code>x<sub>f</sub></code> (x, y), limited to its own half</li>
+        <li>Voltage level and its x/y split</li>
+        <li>A "keep the current path" probability: on some steps the mallet keeps its plan instead of re-planning</li>
+      </ul>
+    </div>
+    <div class="card rl">
+      <h4>Reward</h4>
+      <ul>
+        <li>When the puck crosses to the opponent's side, its path is simulated with the opponent held still</li>
+        <li>Reward = A × puck speed: A = 11.5 if it would score past the opponent, 2.5 if it only reaches the goal when the opponent is ignored, 0 otherwise</li>
+        <li>A large penalty for shots under 5 m/s</li>
+        <li>If the shot would miss, the episode ends, but the game keeps running</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Opponents and robustness</h3>
+  <div class="grid">
+    <div class="card"><h4>Opponent pool</h4><p>Self-play, a defender agent given about 102 ms of extra vision delay, a scripted side-to-side blocker that encourages bank shots, and frozen past models that specialize in straight or bank shots. SAC learns off-policy, so every opponent's experience goes into the main policy's replay buffer.</p></div>
+    <div class="card"><h4>Domain randomization</h4><p>Puck tracking noise (white plus spatially correlated Perlin noise), occlusion and missed detections under the beam, noise in mallet position, velocity and executed voltage, motor constants varied ±, puck mass, friction and drag, and camera and mallet delays drawn from measured distributions.</p></div>
+    <div class="card"><h4>Networks and settings</h4><p>The policy is an MLP: 39 → 512 → 256 → 128 → 64 → 10 (mean and spread for each action), with LayerNorm and LeakyReLU. The Q-networks have the same shape. γ = 0.98, τ = 0.001, batch 1024, lr 1e-5.</p></div>
+  </div>
+
+  <h3>How the training scripts evolved</h3>
+  <p>The numbered files are successive experiments, not modules that depend on each other. Each one is a standalone script with its own constants.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Script</th><th>Algorithm</th><th>Obs</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>torchRL_Training_PPO.py</code></td><td>PPO</td><td>52</td><td>First version; γ = 1.0</td></tr>
+        <tr><td><code>…PPO_6_val.py</code> · <code>…PPO_6_smalldomain.py</code></td><td>PPO</td><td>51</td><td>Value-function and narrow domain-randomization variants</td></tr>
+        <tr><td><code>…PPO_7.py</code></td><td>PPO</td><td>51</td><td>Trajectory buffer across agents</td></tr>
+        <tr><td><code>…PPO_8.py</code></td><td>PPO</td><td>51</td><td>Adds a separately trained defender</td></tr>
+        <tr><td><code>…PPO_9.py</code></td><td>PPO</td><td>54</td><td>Three flag inputs added. <code>expand_model.py</code> pads an old checkpoint's first layer with zero columns so training could continue</td></tr>
+        <tr><td><code>…PPO_10.py</code></td><td>PPO</td><td>38</td><td>Smaller observation; last PPO version</td></tr>
+        <tr><td><code>torchRL_Training_SAC.py</code></td><td>SAC</td><td>39</td><td>Final approach, used for the deployed policy</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 5. FILES -->
+<section id="files">
+  <h2><span class="num">5</span>Repository file map</h2>
+  <pre><code>Air-Hockey-Sim-Claude/
+├── Air_hockey_sim_vectorized.py   main simulator (N games, closed-form physics)
+├── Air_hockey_sim.py              earlier single-game simulator
+├── chandrupatla.py                vectorized root finder (third-party, SciPy issue #7242)
+├── Simulation_agent_interface.py  random-action demo of the simulator API
+├── Air_hockey_sim_tests.py        same actions twice → same result check
+├── torchRL_Training_PPO*.py       PPO training experiments (see table above)
+├── torchRL_Training_SAC.py        final SAC training / evaluation script
+├── expand_model.py                widen a checkpoint's input layer (51 → 54)
+├── *_collision_model_heteroscedastic.pt   wall / mallet collision networks
+├── model_weights/                 saved policies, SAC checkpoints, gameplay video
+├── docs/                          final reports (PDF), photos, this page
+└── requirements.txt               tested package versions</code></pre>
+</section>
+
+<!-- 6. RUNNING -->
+<section id="running">
+  <h2><span class="num">6</span>Running it</h2>
+  <pre><code>python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt</code></pre>
+  <p>The requirements pin CPU-only PyTorch and <code>torchrl==0.10.1</code>, the newest torchrl that still provides the <code>BoundedTensorSpec</code> and <code>CompositeSpec</code> names the scripts import. Each training script picks <code>DEVICE</code> automatically. Without a CUDA GPU it runs on the CPU and simulates <strong>64</strong> games in parallel instead of 2048.</p>
+  <div class="note">
+    <p><strong>Known gaps.</strong> The training scripts load from a <code>checkpoints/</code> folder that isn't in the repo: set <code>load_filepath = None</code> to start fresh, or point it at a file in <code>model_weights/</code>. <code>Simulation_agent_interface.py</code> and <code>Air_hockey_sim_tests.py</code> still expect the older <code>check_state()</code> return value, and the tests call <code>initialize</code> instead of <code>initalize</code>.</p>
+  </div>
+  <p>Full derivations, calibration and timing details are in the two final reports: <a href="../2509_AI_Air_Hockey_FinalReport.pdf">first half</a> and <a href="../2550___AI_Air_Hockey_Final_Report.pdf">second half</a>.</p>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">Summarized from the repository source and <code>README.md</code>. Numbers come from the README and the constants in <code>torchRL_Training_SAC.py</code>.</div>
+</footer>
+</body>
+</html>
