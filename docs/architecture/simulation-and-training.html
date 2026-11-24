@@ -1,0 +1,969 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulation and Training</title>
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --surface: #ffffff;
+    --ink: #1d232b;
+    --muted: #5b6573;
+    --line: #dcd8cf;
+    --accent: #c2410c;
+    --accent-soft: #fdecdf;
+    --sim: #1d6fb8;
+    --sim-soft: #e3effa;
+    --rl: #6d3fc0;
+    --rl-soft: #eee7fa;
+    --ok: #2f7d4f;
+    --ok-soft: #e2f3e8;
+    --code-bg: #f2efe8;
+    --code-head: #e7e2d7;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --surface: #1b1f26; --ink: #e7e9ec; --muted: #9aa3ae; --line: #303742;
+      --accent: #f08a4b; --accent-soft: #3a2519; --sim: #6cb0ee; --sim-soft: #182a3c;
+      --rl: #b394f0; --rl-soft: #2a2140; --ok: #6fcf97; --ok-soft: #18301f;
+      --code-bg: #20252d; --code-head: #2a313b;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171c; --surface: #1b1f26; --ink: #e7e9ec; --muted: #9aa3ae; --line: #303742;
+    --accent: #f08a4b; --accent-soft: #3a2519; --sim: #6cb0ee; --sim-soft: #182a3c;
+    --rl: #b394f0; --rl-soft: #2a2140; --ok: #6fcf97; --ok-soft: #18301f;
+    --code-bg: #20252d; --code-head: #2a313b;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+  header { padding-block: 56px 28px; border-bottom: 1px solid var(--line); }
+  .eyebrow { color: var(--accent); font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: .78rem; margin: 0 0 8px; }
+  .eyebrow a { color: inherit; }
+  h1 { font-size: clamp(2rem, 5vw, 2.8rem); line-height: 1.12; margin: 0 0 14px; letter-spacing: -.02em; }
+  .lede { font-size: 1.12rem; color: var(--muted); max-width: 46em; margin: 0; }
+  nav { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 22px; font-size: .92rem; }
+  nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line); }
+  nav a:hover { border-color: var(--accent); }
+
+  section { padding-block: 44px 8px; }
+  h2 { font-size: 1.6rem; margin: 0 0 6px; letter-spacing: -.01em; }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: .4em; }
+  h3 { font-size: 1.08rem; margin: 30px 0 8px; }
+  p { margin: 0 0 14px; }
+  .sub { color: var(--muted); margin-bottom: 22px; }
+  a { color: var(--accent); }
+  code { font: .88em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+
+  /* code text boxes */
+  .code { margin: 16px 0 22px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--code-bg); }
+  .code .head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 7px 14px; background: var(--code-head); border-bottom: 1px solid var(--line); font-size: .8rem; }
+  .code .head .file { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); }
+  .code .head .what { color: var(--muted); }
+  .code pre { margin: 0; padding: 12px 14px; overflow-x: auto; font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 4; }
+  .code pre code { background: none; padding: 0; font-size: inherit; }
+  .code.sim { border-left: 3px solid var(--sim); }
+  .code.rl { border-left: 3px solid var(--rl); }
+  .cm { color: var(--muted); }
+
+  figure { margin: 22px 0; }
+  figcaption { color: var(--muted); font-size: .88rem; margin-top: 8px; }
+  .diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; overflow-x: auto; }
+  .diagram svg { display: block; width: 100%; min-width: 620px; height: auto; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 18px 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card h4 { margin: 0 0 6px; font-size: 1rem; }
+  .card p, .card ul { margin: 0; font-size: .94rem; color: var(--muted); }
+  .card ul { padding-left: 18px; }
+  .card.sim { border-top: 3px solid var(--sim); }
+  .card.rl { border-top: 3px solid var(--rl); }
+
+  .table-wrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td code { white-space: nowrap; }
+  td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .note { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 12px 16px; border-radius: 0 8px 8px 0; font-size: .94rem; margin: 18px 0; }
+  .note p:last-child { margin: 0; }
+  footer { margin-top: 48px; padding-block: 24px 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: .88rem; }
+
+  .d-text { fill: var(--ink); font: 13px system-ui, sans-serif; }
+  .d-small { fill: var(--muted); font: 11px system-ui, sans-serif; }
+  .d-mono { fill: var(--ink); font: 11.5px ui-monospace, Menlo, Consolas, monospace; }
+  .d-title { fill: var(--ink); font: 600 14px system-ui, sans-serif; }
+  .d-line { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  .d-sim { fill: var(--sim-soft); stroke: var(--sim); stroke-width: 1.5; }
+  .d-rl { fill: var(--rl-soft); stroke: var(--rl); stroke-width: 1.5; }
+  .d-acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .d-ok { fill: var(--ok-soft); stroke: var(--ok); stroke-width: 1.5; }
+  .d-frame { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .d-arrowhead { fill: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <p class="eyebrow"><a href="index.html">Air-Hockey-Sim architecture</a> · simulation &amp; training</p>
+    <h1>Inside the simulator and the SAC training loop</h1>
+    <p class="lede">This page covers only the two pieces that produce a trained policy: the vectorized physics simulator in <code>Air_hockey_sim_vectorized.py</code> and the Soft Actor-Critic trainer in <code>torchRL_Training_SAC.py</code>. Each code box is copied from the repository and labelled with its file and line numbers, as of commit <code>ccb283f</code> on branch <code>cpu-support</code>.</p>
+    <nav aria-label="Sections">
+      <a href="#overview">1 · Overview</a>
+      <a href="#state">2 · Simulator state</a>
+      <a href="#mallet">3 · Mallet model</a>
+      <a href="#puck">4 · Puck model</a>
+      <a href="#step">5 · Stepping</a>
+      <a href="#sensing">6 · Sensing &amp; timing</a>
+      <a href="#agent">7 · Observations &amp; actions</a>
+      <a href="#opponents">8 · Game slots</a>
+      <a href="#reward">9 · Rewards</a>
+      <a href="#sac">10 · SAC update</a>
+      <a href="#loop">11 · Training loop</a>
+      <a href="#issues">12 · Known issues</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+<!-- 1 -->
+<section id="overview">
+  <h2><span class="num">1</span>Overview</h2>
+  <p class="sub">The trainer owns the clock. The simulator only knows how to move every game forward by a given amount of time.</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 330" role="img" aria-label="Data flow between the training script and the simulator module">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+          </marker>
+        </defs>
+        <rect x="10" y="10" width="420" height="310" rx="12" class="d-frame"/>
+        <text x="26" y="34" class="d-title">torchRL_Training_SAC.py</text>
+        <rect x="470" y="10" width="420" height="310" rx="12" class="d-frame"/>
+        <text x="486" y="34" class="d-title">Air_hockey_sim_vectorized.py (imported as sim)</text>
+
+        <rect x="30" y="52" width="380" height="54" rx="8" class="d-acc"/>
+        <text x="46" y="75" class="d-text">Event scheduler: camera frame · mallet sample · action</text>
+        <text x="46" y="94" class="d-small">picks the soonest event, calls sim.step(dt)</text>
+
+        <rect x="30" y="122" width="380" height="54" rx="8" class="d-acc"/>
+        <text x="46" y="145" class="d-text">Noise models + delayed camera buffer</text>
+        <text x="46" y="164" class="d-small">Perlin + Gaussian noise, beam occlusion, dropped frames</text>
+
+        <rect x="30" y="192" width="180" height="54" rx="8" class="d-rl"/>
+        <text x="46" y="215" class="d-text">Attacker policy</text>
+        <text x="46" y="234" class="d-small">policy_modules[0]</text>
+        <rect x="230" y="192" width="180" height="54" rx="8" class="d-rl"/>
+        <text x="246" y="215" class="d-text">Defender policy</text>
+        <text x="246" y="234" class="d-small">policy_modules[1]</text>
+
+        <rect x="30" y="262" width="380" height="46" rx="8" class="d-rl"/>
+        <text x="46" y="290" class="d-text">Replay buffers → update_sac_agent(0/1)</text>
+
+        <rect x="490" y="52" width="380" height="54" rx="8" class="d-sim"/>
+        <text x="506" y="75" class="d-text">step(t) → update_puck() loop</text>
+        <text x="506" y="94" class="d-small">closed-form puck flight, wall / corner / mallet hits</text>
+
+        <rect x="490" y="122" width="380" height="54" rx="8" class="d-sim"/>
+        <text x="506" y="145" class="d-text">take_action(x_f, Vo) → update_path()</text>
+        <text x="506" y="164" class="d-small">new mallet trajectory coefficients per axis</text>
+
+        <rect x="490" y="192" width="380" height="54" rx="8" class="d-sim"/>
+        <text x="506" y="215" class="d-text">check_state() · check_goal()</text>
+        <text x="506" y="234" class="d-small">errors and goals → indices / masks</text>
+
+        <rect x="490" y="262" width="380" height="46" rx="8" class="d-sim"/>
+        <text x="506" y="290" class="d-text">reset_sim(index, ab_vars) · impulse()</text>
+
+        <path d="M410 79 H490" class="d-line" marker-end="url(#ah)"/>
+        <path d="M490 92 H440 V149 H410" class="d-line" marker-end="url(#ah)"/>
+        <text x="420" y="118" class="d-small">positions</text>
+        <path d="M120 176 V192" class="d-line" marker-end="url(#ah)"/>
+        <path d="M320 176 V192" class="d-line" marker-end="url(#ah)"/>
+        <path d="M410 219 H450 V149 H490" class="d-line" marker-end="url(#ah)"/>
+        <text x="424" y="236" class="d-small">x_f, Vo</text>
+        <path d="M490 219 H460 V285 H410" class="d-line" marker-end="url(#ah)"/>
+        <text x="420" y="303" class="d-small">dones</text>
+      </svg>
+    </div>
+    <figcaption>The simulator is a module of global NumPy arrays rather than a class. The trainer calls <code>sim.initalize(...)</code> once (the function name is spelled that way in the code) and then drives it with <code>step</code>, <code>take_action</code> and <code>reset_sim</code>.</figcaption>
+  </figure>
+</section>
+
+<!-- 2 -->
+<section id="state">
+  <h2><span class="num">2</span>Simulator state</h2>
+  <p class="sub">Every quantity has a leading game axis, so one NumPy call updates every game at once.</p>
+  <p>Mallet arrays are shaped <code>(game, player, x/y)</code>. Puck arrays are <code>(game, x/y)</code>. The puck's physics constants are drawn per game when the simulator starts, which gives each game a slightly different table.</p>
+
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:94–121</span><span class="what">initalize(): state arrays and per-game puck physics</span></div>
+<pre><code>    mallet_pos = np.empty((game_number,2,2), dtype="float32")
+    mallet_vel = np.empty((game_number,2,2), dtype="float32")
+
+    x_0 = np.empty((game_number,2,2), dtype="float32")
+    x_0[:,0,:] = [0.25, 0.5]
+    x_0[:,1,:] = bounds - x_0[:,0,:]
+    x_p = np.zeros((game_number,2,2), dtype="float32")
+    x_pp = np.zeros((game_number,2,2), dtype="float32")
+
+    reset_mask = np.full((game_number), False)
+    reset_sim_mask = np.full((game_number), False)
+    ...
+    drag = 0.007901 + np.random.random((game_number,))*0.0004
+    friction = 0.0003363 + np.random.random((game_number,))*0.00004
+    mass = 0.03692278 + np.random.random((game_number,)) * 0.001</code></pre>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Quantity</th><th>Value used in training</th><th>Where it is set</th></tr></thead>
+      <tbody>
+        <tr><td>Table</td><td class="n">2.362 × 1.144 m</td><td><code>bounds</code> in both files</td></tr>
+        <tr><td>Mallet radius</td><td class="n">0.0505 m</td><td><code>mallet_r = 0.1010 / 2</code></td></tr>
+        <tr><td>Puck radius</td><td class="n">0.0413 m</td><td><code>puck_r = 0.0826 / 2</code></td></tr>
+        <tr><td>Goal width</td><td class="n">0.3345 m</td><td><code>goal_width</code></td></tr>
+        <tr><td>Motor voltage limit</td><td class="n">21.6 V</td><td><code>Vmax = 24*0.9</code></td></tr>
+        <tr><td>Pulley radius</td><td class="n">0.0357 m</td><td><code>pullyR</code></td></tr>
+        <tr><td>Restitution</td><td class="n">0.8</td><td><code>puck_mallet_res</code> (also used for walls, see §12)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 3 -->
+<section id="mallet">
+  <h2><span class="num">3</span>Mallet model</h2>
+  <p class="sub">Each axis of the Core-XY gantry follows a third-order linear model, so its position has an exact formula for any constant voltage.</p>
+  <p>Six constants <code>a1 a2 a3 b1 b2 b3</code> describe the motors. Because a Core-XY belt drives the x axis with <i>(a − b)</i> and the y axis with <i>(a + b)</i>, the code builds per-axis coefficients <code>C5 C6 C7</code> from those sums and differences. The characteristic roots <code>ab</code> and the coefficient table <code>CE</code> then give position as <i>A·e<sup>at</sup> + B·e<sup>bt</sup> + C·t + D</i>.</p>
+
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:2010–2038</span><span class="what">reset_sim(): motor constants → closed-form coefficients</span></div>
+<pre><code>    C5_idx = np.empty((len(index),2,2))
+    C5_idx[:,:,0] = ab_vars[:,:,0] - ab_vars[:,:,3]
+    C5_idx[:,:,1] = ab_vars[:,:,0] + ab_vars[:,:,3] #[a1-b1, a1+b1]
+    ...
+    A = np.sqrt(np.square(C6_idx) - 4 * C5_idx * C7_idx)
+    B = 2 * np.square(C7_idx) * A
+    ...
+    #(gamenumber, player, x/y, a/b)
+    ab[index] = np.stack([(-C6_idx-A)/(2*C5_idx),(-C6_idx+A)/(2*C5_idx)], axis=-1)
+
+    #(game_number, player, x/y, coefficients in A e^(at) + B e^(bt) + Ct + D)
+    CE[index] = np.stack(
+        [(-np.square(C6_idx) + A*C6_idx+2*C5_idx*C7_idx)/B,
+        (np.square(C6_idx)+A*C6_idx-2*C5_idx*C7_idx)/B,
+        1/C7_idx,
+        -C6_idx/np.square(C7_idx)], axis=-1
+    )</code></pre>
+  </div>
+
+  <h3>Turning an action into a trajectory</h3>
+  <p>An action is a target point <code>x_f</code> and a voltage <code>Vo</code> for each axis. <code>update_path</code> reads the mallet's current position, velocity and acceleration at the current time and folds them into the initial-condition terms <code>C2–C4</code>. The voltage becomes <code>C1</code>. If the mallet would overshoot, the voltage sign is flipped. <code>solve_a()</code> then uses Newton's method to find the switch time of a bang-bang profile (full voltage one way, then the other) that brings the mallet to rest at <code>x_f</code>.</p>
+
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:1496–1528</span><span class="what">update_path(): initial conditions, voltage, overshoot check</span></div>
+<pre><code>    x_f = xf
+
+    #(game, player, x/y)
+    x_0 = get_pos(np.full((game_number),time))
+    x_0 = np.maximum(x_0, bounds_mallet[:,:,:,0]+1e-8)
+    x_0 = np.minimum(x_0, bounds_mallet[:,:,:,1]-1e-8)
+    x_p = get_xp(np.full((game_number),time))
+    x_pp = get_xpp(time)
+    ...
+    C2 = C5*x_pp + C6 * x_p + C7 * x_0
+    C3 = C5 * x_p + C6 * x_0
+    C4 = C5 * x_0
+    ...
+    C1 = Vo * pullyR / 2
+
+    #find x_f0
+    #use this to set sign of C1
+    #check overshoot
+    x_f0 = C2 * A2CE[:,:,:,2]
+    overshoot_mask = np.logical_or(np.abs(x_0 - x_f0) &gt; np.abs(x_0 - x_f),\
+                                   np.logical_xor(x_0 &gt; x_f0, x_0 &gt; x_f))
+
+    C1 = np.where(overshoot_mask &amp; (x_f0 &lt; x_0), -C1, C1)</code></pre>
+  </div>
+
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:1813–1821</span><span class="what">take_action(): the trainer's entry point</span></div>
+<pre><code>def take_action(x_f, Vo):
+    global time
+    global reset_mask
+    global reset_sim_mask
+    update_path(time, x_f, Vo, reset_mask)
+    #reset_mask = np.full((game_number), False)
+    reset_mask[reset_sim_mask] = False
+    reset_sim_mask = np.full((game_number), False)
+    time = 0</code></pre>
+  </div>
+  <p>Note the last line: the simulator's clock is time since the last action, which is why the trainer passes it only the time to the next event.</p>
+</section>
+
+<!-- 4 -->
+<section id="puck">
+  <h2><span class="num">4</span>Puck model</h2>
+  <p class="sub">Between collisions the puck moves in a straight line, slowed by friction and air drag: <i>m·v̇ = −f − B·v²</i>.</p>
+  <p>That equation has an exact solution. Distance travelled is a log-cosine and speed is a tangent, both in terms of an integration constant <code>C</code> set from the starting speed. The puck stops at <i>t = −C·m</i>, and the functions clamp there so a stopped puck stays stopped.</p>
+
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:269–295</span><span class="what">closed-form puck distance and speed</span></div>
+<pre><code>def dP(t, B, f, mass, C, D):
+    tpZero = get_tPZero(mass,C)
+    t = np.minimum(tpZero, t)
+    p = (mass/B) * np.log(np.cos((np.sqrt(B*f)*(C*mass+t))/mass)) + D
+    return p
+
+def velocity(t, B, f, mass, C):
+    tpZero = get_tPZero(mass,C)
+    v = np.zeros_like(t)
+    v_mask = t &lt; tpZero
+    v[v_mask] = -np.sqrt(f/B)[v_mask] * np.tan(((np.sqrt(B*f)*(C*mass+t))/mass)[v_mask])
+    return v
+...
+def get_tPZero(mass, C):
+    return -C*mass
+
+def getC(v_norm, B, f):
+    return - np.arctan(v_norm * np.sqrt(B/f)) / np.sqrt(B*f)
+
+def getD(B, mass, f, C):
+    return - (mass/B) * np.log(np.cos(np.sqrt(B*f)*C))</code></pre>
+  </div>
+
+  <h3>Wall hits</h3>
+  <p><code>update_puck</code> computes the straight-line distance <code>s</code> to the nearest wall. If the puck would travel farther than <code>s</code> in the time left, that game has a wall hit. The exact hit time is found by the Chandrupatla root finder on <code>distance_to_wall</code>. The puck is moved to the wall, its normal velocity is reversed and scaled, and the unused time is returned so the game is advanced again.</p>
+
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:857, 908–940</span><span class="what">update_puck(): finding and resolving a wall hit</span></div>
+<pre><code>    hit_wall_mask = (s &lt; dPdt) &amp; v_norm_mask
+    ...
+        root = chandrupatla(distance_to_wall, np.zeros_like(tw), tw, args=(wall_dist, \
+                                Bmw, fmw, massmw, Cw, Dw))
+        ...
+        new_pos[hit_wall_mask] = pos[hit_wall_mask] + dirw * np.tile(dP(root, Bmw, fmw,\
+                                                    massmw, Cw, Dw)[:, np.newaxis], (1, 2))
+        ...
+        angle_out = angle_in
+        v_out = v_in * puck_mallet_res
+        ...
+        recurr_mask_m[hit_wall_mask] = True
+        recurr_time_m[hit_wall_mask] = tw-root</code></pre>
+  </div>
+  <p>Goal-mouth corners (<code>corner_collision</code>) and mallet hits (<code>puck_mallet_collision</code>) follow the same pattern: find the contact time, resolve the bounce, return the leftover time. The learned collision networks (<code>HeteroscedasticNN</code>) are still defined in <code>initalize</code>, but the lines that load and call them are commented out, so every bounce uses the fixed restitution factor.</p>
+</section>
+
+<!-- 5 -->
+<section id="step">
+  <h2><span class="num">5</span>Stepping</h2>
+  <p class="sub"><code>step(t)</code> keeps calling <code>update_puck</code> until no game has collision time left over.</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 220" role="img" aria-label="The step loop: update all active games, keep only games with leftover time, repeat">
+        <defs>
+          <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+          </marker>
+        </defs>
+        <rect x="20" y="70" width="170" height="70" rx="8" class="d-acc"/>
+        <text x="36" y="98" class="d-text">recurr_mask = all</text>
+        <text x="36" y="118" class="d-small">every game owes time t</text>
+
+        <rect x="240" y="70" width="200" height="70" rx="8" class="d-sim"/>
+        <text x="256" y="98" class="d-text">update_puck(active)</text>
+        <text x="256" y="118" class="d-small">advance to next hit or to t</text>
+
+        <rect x="490" y="70" width="170" height="70" rx="8" class="d-sim"/>
+        <text x="506" y="98" class="d-text">recurr_mask2</text>
+        <text x="506" y="118" class="d-small">games that hit something</text>
+
+        <rect x="710" y="70" width="170" height="70" rx="8" class="d-ok"/>
+        <text x="726" y="98" class="d-text">time += t</text>
+        <text x="726" y="118" class="d-small">mallets via get_pos(time)</text>
+
+        <path d="M190 105 H240" class="d-line" marker-end="url(#ah2)"/>
+        <path d="M440 105 H490" class="d-line" marker-end="url(#ah2)"/>
+        <path d="M660 105 H710" class="d-line" marker-end="url(#ah2)"/>
+        <text x="664" y="96" class="d-small">none left</text>
+        <path d="M575 70 V36 H340 V70" class="d-line" marker-end="url(#ah2)"/>
+        <text x="370" y="28" class="d-small">some left: repeat with leftover time only</text>
+        <text x="240" y="176" class="d-small">Below 10% of games active, the boolean mask is swapped for an index array.</text>
+        <text x="240" y="194" class="d-small">After 10 rounds (100 with calculate_cross_left) a stuck puck is moved off the table so check_state() resets it.</text>
+      </svg>
+    </div>
+  </figure>
+
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:1693–1716</span><span class="what">step(): the main loop (default branch)</span></div>
+<pre><code>    score_avg = np.full((game_number), 0.0)
+    while np.any(recurr_mask):
+        counter += 1
+        if counter == 10:
+            puck_pos[recurr_mask] = np.array([1,-1])
+            puck_vel[recurr_mask] = np.array([0,0])
+        if recurr_mask.sum() / len(recurr_mask) &lt; 0.1 and not indexed:
+            indexed = True
+            recurr_mask = np.array(np.where(recurr_mask)[0])
+        if not indexed:
+            puck_pos[recurr_mask], puck_vel[recurr_mask], recurr_time[recurr_mask], recurr_mask2, score_avg_n, cross_right_n = update_puck(recurr_time[recurr_mask], recurr_mask, time + (t-recurr_time)[recurr_mask])
+            ...
+            recurr_mask[recurr_mask] = recurr_mask2
+        else:
+            ...
+            recurr_mask = recurr_mask[recurr_mask2]
+    time += t
+    mallet_pos[np.logical_not(reset_mask)] = get_pos(np.full((game_number), time))[np.logical_not(reset_mask)]
+    mallet_vel[np.logical_not(reset_mask)] = get_xp(np.full((game_number),time))[np.logical_not(reset_mask)]
+
+    return mallet_pos, mallet_vel, puck_pos, puck_vel, score_avg, cross_right</code></pre>
+  </div>
+
+  <h3>Ending a game</h3>
+  <p><code>check_goal()</code> returns masks of games where the puck went past either end. <code>check_state()</code> returns the indices of games in an invalid state: puck off the table outside a goal, or puck overlapping a mallet. Both set <code>reset_mask</code> so those games stop moving until the trainer calls <code>reset_sim</code>. Separately, <code>impulse()</code> nudges slow pucks (under 0.15 m/s) toward a randomly drifting point, so a puck never sits perfectly still.</p>
+
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:1879–1887</span><span class="what">check_goal()</span></div>
+<pre><code>def check_goal():
+    global reset_mask
+    entered_left_goal_mask = np.logical_and(puck_pos[:,0] &lt; 0, np.logical_not(reset_mask))
+    entered_right_goal_mask = np.logical_and(puck_pos[:,0] &gt; surface[0], np.logical_not(reset_mask))
+
+    entered_goal = (entered_left_goal_mask | entered_right_goal_mask)
+
+    if np.any(entered_goal):
+        reset_mask = reset_mask | entered_goal</code></pre>
+  </div>
+</section>
+
+<!-- 6 -->
+<section id="sensing">
+  <h2><span class="num">6</span>Sensing and timing</h2>
+  <p class="sub">The trainer reproduces the real robot's timing: what the policy sees is late and noisy, and the mallet reacts late too.</p>
+  <p>Three event streams run side by side. A camera frame arrives every 1/119.96 s. An action is taken about 13.4 ms after the frame it is based on (image processing delay). The mallet state the policy sees is sampled 4.6–7.7 ms before the action. Only every other frame triggers an action (<code>inference_img</code> alternates), which gives the 60 Hz control rate. The scheduler always advances the simulator to whichever event is soonest.</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 190" role="img" aria-label="Timeline of camera frames, mallet samples and actions">
+        <line x1="40" y1="60" x2="870" y2="60" class="d-line"/>
+        <line x1="40" y1="110" x2="870" y2="110" class="d-line"/>
+        <line x1="40" y1="160" x2="870" y2="160" class="d-line"/>
+        <text x="40" y="48" class="d-small">camera frames (every 8.3 ms)</text>
+        <text x="40" y="98" class="d-small">mallet state sampled</text>
+        <text x="40" y="148" class="d-small">action applied</text>
+        <g class="d-sim">
+          <rect x="96" y="54" width="8" height="12" rx="2"/><rect x="196" y="54" width="8" height="12" rx="2"/>
+          <rect x="296" y="54" width="8" height="12" rx="2"/><rect x="396" y="54" width="8" height="12" rx="2"/>
+          <rect x="496" y="54" width="8" height="12" rx="2"/><rect x="596" y="54" width="8" height="12" rx="2"/>
+          <rect x="696" y="54" width="8" height="12" rx="2"/><rect x="796" y="54" width="8" height="12" rx="2"/>
+        </g>
+        <circle cx="100" cy="60" r="9" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <circle cx="300" cy="60" r="9" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <circle cx="500" cy="60" r="9" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <circle cx="700" cy="60" r="9" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <g class="d-ok"><circle cx="198" cy="110" r="5"/><circle cx="398" cy="110" r="5"/><circle cx="598" cy="110" r="5"/><circle cx="798" cy="110" r="5"/></g>
+        <g class="d-rl"><rect x="256" y="154" width="12" height="12"/><rect x="456" y="154" width="12" height="12"/><rect x="656" y="154" width="12" height="12"/><rect x="856" y="154" width="12" height="12"/></g>
+        <path d="M100 70 L262 150" stroke="var(--accent)" stroke-dasharray="4 3" fill="none"/>
+        <text x="150" y="132" class="d-small">≈13.4 ms</text>
+        <path d="M198 115 L258 152" stroke="var(--ok)" stroke-dasharray="4 3" fill="none"/>
+        <text x="600" y="186" class="d-small">circled frames are the ones used for a decision (every other frame → 60 Hz)</text>
+      </svg>
+    </div>
+    <figcaption>Not to scale. The delays are random per event, drawn from <code>image_delay</code> and <code>sample_mallet_delay()</code>.</figcaption>
+  </figure>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:81–83, 481–500</span><span class="what">camera timing and the measured mallet delay distribution</span></div>
+<pre><code>image_delay = [13.38839/1000, 0.2/1000, 13/1000, 13.7/1000]
+camera_period = 1/119.96
+
+frames = [0, 1, 2, 5, 11]
+...
+def sample_mallet_delay(n_samples=1):
+    intervals = np.array([
+        [4.6, 4.7],
+        [5.3, 5.4],
+        [6.1, 6.2],
+        [6.8, 6.9],
+        [7.6, 7.7]
+    ])
+    counts = np.array([16, 166, 158, 144, 2])
+    probabilities = counts / counts.sum()
+    ...
+    return np.random.uniform(lows, highs) / 1000.0</code></pre>
+  </div>
+
+  <h3>Camera noise</h3>
+  <p>Each camera frame stores the puck and opponent mallet positions with several layers of error, all calibrated against the real camera:</p>
+  <div class="grid">
+    <div class="card rl"><h4>Fixed lens distortion</h4><p>A low-frequency Perlin noise map (std 1.2 mm), sampled at an offset unique to each game. The same spot on the table always reads slightly wrong in the same way.</p></div>
+    <div class="card rl"><h4>Frame-to-frame jitter</h4><p>Gaussian noise whose standard deviation grows linearly with distance from the camera (<code>puck_std</code>).</p></div>
+    <div class="card rl"><h4>Gantry beam occlusion</h4><p>When the gantry beam is between the camera and the puck, noise is larger (<code>puck_beam_std</code>), and a fraction of frames (<code>percent_miss</code>) just repeat the last reading.</p></div>
+  </div>
+</section>
+
+<!-- 7 -->
+<section id="agent">
+  <h2><span class="num">7</span>Observations and actions</h2>
+  <p class="sub">Every game contributes two rows, one per player. Each player sees the table from its own side, so both players can share one policy.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Columns</th><th>Contents</th></tr></thead>
+      <tbody>
+        <tr><td class="n">0–19</td><td>Puck x,y and opponent mallet x,y from camera frames 0, 1, 2, 5 and 11 back (5 × 4 values)</td></tr>
+        <tr><td class="n">20–23</td><td>Own mallet position and velocity, with sensor noise</td></tr>
+        <tr><td class="n">24–27</td><td>Own mallet position and velocity at the previous action</td></tr>
+        <tr><td class="n">28–31</td><td>Previous action: target x,y and voltages Vx, Vy</td></tr>
+        <tr><td class="n">32–37</td><td>This game's motor constants a1–a3, b1–b3, scaled (the robot can tell the policy how fast its motors are)</td></tr>
+        <tr><td class="n">38</td><td>Role flag: 1 = attacking, 0 = defending</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:33–45</span><span class="what">observation and action sizes</span></div>
+<pre><code>obs_dim = 39 #[puck_pos, opp_mallet_pos] #guess mean low stdl
+            #[mallet_pos, mallet_vel, past mallet_pos, past malet_vel, past action]
+            #[a1, a2, a3, b1, b2, b3]
+            # opp defending
+            # 20 + 8 + 4 + 6 + 1 = 39
+
+mallet_r = 0.1010 / 2
+puck_r = 0.0826 / 2
+pullyR = 0.0357347133
+...
+action_dim = 5</code></pre>
+  </div>
+
+  <h3>Actions</h3>
+  <p>The policy outputs five numbers through a tanh-squashed Gaussian bounded by <code>lows</code> and <code>highs</code>:</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>Meaning</th><th>Range (attacker)</th></tr></thead>
+      <tbody>
+        <tr><td class="n">0, 1</td><td>Target point <code>x_f</code> on own half</td><td>inside own half, 1 cm from the edges</td></tr>
+        <tr><td class="n">2</td><td>Overall speed as a fraction of <code>Vmax</code></td><td class="n">0 to 1</td></tr>
+        <tr><td class="n">3</td><td>How that voltage is split between x and y</td><td class="n">−1 to 1</td></tr>
+        <tr><td class="n">4</td><td>Hold gate: the higher it is, the more likely the previous target is kept instead of this one</td><td class="n">0 to 1</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:1013–1036</span><span class="what">action → voltages, hold gate, apply</span></div>
+<pre><code>            Vo = actions_np[:,2][:, None] * Vmax * np.stack((1+actions_np[:,3], 1-actions_np[:,3]), axis=1) + np.stack((np.random.normal(0, V_std_x, (2*envs)), np.random.normal(0, V_std_y, (2*envs))), axis=-1)
+            ...
+            no_update_mask = np.stack([actions_np[:envs,4] &gt; np.random.random((envs,))*1.01, np.concatenate([actions_np[envs:envs+self_play,4] &gt; np.random.random((self_play,))*1.01, actions_np[envs+self_play:,4] &gt; np.random.random((envs-self_play,))*1.01], axis=0)], axis=1)
+            ...
+            xf[no_update_mask] = past_xf[no_update_mask]
+            Vo[no_update_mask] = past_Vo[no_update_mask]
+
+            past_xf = xf.copy()
+            past_Vo = Vo.copy()
+
+            sim.take_action(xf, Vo)
+            sim.impulse(2/60, 0.005)</code></pre>
+  </div>
+
+  <h3>Mirror augmentation</h3>
+  <p>Before each decision, a random half of the rows are flipped top-to-bottom with <code>apply_symmetry</code>. The policy acts on the flipped view and the y target is flipped back. This teaches the policy that the table is symmetric.</p>
+
+  <h3>Networks</h3>
+  <p>The attacker and defender each have a policy network and two Q networks of the same shape (39 → 512 → 256 → 128 → 64, LayerNorm on the first two layers, LeakyReLU). The policy ends in 10 outputs: a mean and a scale for each of the 5 actions.</p>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:108–122</span><span class="what">policy network</span></div>
+<pre><code>for _ in range(2):
+    policy_modules.append(nn.Sequential(
+                            nn.Linear(obs_dim, 512),
+                            nn.LayerNorm(512),
+                            nn.LeakyReLU(0.01),
+                            nn.Linear(512, 256),
+                            nn.LayerNorm(256),
+                            nn.LeakyReLU(0.01),
+                            nn.Linear(256, 128),
+                            nn.LeakyReLU(0.01),
+                            nn.Linear(128, 64),
+                            nn.LeakyReLU(),
+                            nn.Linear(64, action_dim * 2),
+                            NormalParamExtractor()
+                        ))</code></pre>
+  </div>
+</section>
+
+<!-- 8 -->
+<section id="opponents">
+  <h2><span class="num">8</span>Game slots and opponents</h2>
+  <p class="sub">The 2 × <code>envs</code> observation rows are split into fixed ranges, and each range gets a different opponent.</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 200" role="img" aria-label="Layout of observation rows for 64 games">
+        <text x="20" y="28" class="d-title">Rows of obs / past_obs with envs = 64 (CPU)</text>
+        <rect x="20" y="48" width="430" height="56" rx="6" class="d-rl"/>
+        <text x="34" y="72" class="d-text">0–63 · left players</text>
+        <text x="34" y="92" class="d-small">always the attacker policy being trained</text>
+        <rect x="450" y="48" width="108" height="56" rx="6" class="d-acc"/>
+        <text x="460" y="72" class="d-text">64–79</text>
+        <text x="460" y="92" class="d-small">self-play</text>
+        <rect x="558" y="48" width="322" height="56" rx="6" class="d-sim"/>
+        <text x="572" y="72" class="d-text">80–127 · right-side opponents</text>
+        <text x="572" y="92" class="d-small">defend first, then attack</text>
+        <text x="450" y="130" class="d-small">self_play = envs // 4 = 16 games</text>
+        <text x="558" y="148" class="d-small">While defending: defender policy (policy_modules[1]);</text>
+        <text x="558" y="164" class="d-small">in half of these games, a scripted blocker once the puck is on its side.</text>
+        <text x="558" y="180" class="d-small">While attacking: the attacker policy.</text>
+        <text x="20" y="130" class="d-small">Right-hand rows are game index + envs.</text>
+      </svg>
+    </div>
+    <figcaption>With a GPU the same split applies to 2048 games (512 self-play).</figcaption>
+  </figure>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:502–509, 736–740</span><span class="what">game count, CPU cap and self-play split</span></div>
+<pre><code>envs = 2048 #2048
+if not train:
+    envs = 3
+# Training with 2048 parallel games is too slow on a CPU, so use fewer.
+CPU_ENVS = 64
+if DEVICE.type == "cpu" and envs &gt; CPU_ENVS:
+    print(f"No CUDA GPU found: running {CPU_ENVS} games in parallel instead of {envs}.")
+    envs = CPU_ENVS
+...
+if train:
+    # A quarter of the games are self-play (512 of 2048); the rest face other opponents.
+    self_play = envs // 4
+else:
+    self_play = 1</code></pre>
+  </div>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:956–959</span><span class="what">all rows go through the attacker, then defenders overwrite theirs</span></div>
+<pre><code>                tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
+
+                policy_out = policy_modules[0](tensor_obs)
+                actions = policy_out["action"].detach().to('cpu')</code></pre>
+  </div>
+
+  <div class="note">
+    <p>The frozen straight-shot (<code>SAC_212</code>) and bank-shot (<code>SAC_237</code>) models are loaded into <code>example_policy_modules</code>, and <code>straight_shot_mask</code> / <code>alternate_model_mask</code> mark games for them. But the lines in the training loop that would use their actions are commented out, so in the current code they do not play.</p>
+  </div>
+
+  <h3>Domain randomization</h3>
+  <div class="grid">
+    <div class="card sim"><h4>Motor constants</h4><p>Drawn per game and per player from <code>ab_ranges</code>, scaled by a random speed factor of 0.7–1.2. One time in five the measured real values are used instead. Redrawn on every reset.</p></div>
+    <div class="card sim"><h4>Puck physics</h4><p><code>drag</code>, <code>friction</code> and <code>mass</code> vary by a few percent per game.</p></div>
+    <div class="card rl"><h4>Voltage noise</h4><p>Gaussian noise (std 0.07 V) on each commanded voltage.</p></div>
+    <div class="card rl"><h4>Position offsets</h4><p>10% of rows get a fixed offset of up to ±2 cm on what the mallet thinks its own y position is.</p></div>
+  </div>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:66–77</span><span class="what">motor constant ranges and speed spread</span></div>
+<pre><code>ab_ranges = np.array([
+        [1.6e-05, 2.0e-05], #[6.9e-6, 8.5e-6],  # a1
+        [9.0e-3, 1.12e-2],  # a2
+        [5.25e-2, 8.15e-2],  # a3
+        [-1.3e-05, -9.0e-06], #[-8.19e-6, -6.01e-6], # b1
+        [-4.5e-3, -3.4e-3],   # b2
+	[2.0e-3, 2.6e-3]    #[3.5e-3, 6.5e-3] #b3
+    ])
+...
+speed_var = [0.7,1.2]</code></pre>
+  </div>
+</section>
+
+<!-- 9 -->
+<section id="reward">
+  <h2><span class="num">9</span>Rewards</h2>
+  <p class="sub">Large terminal rewards for goals, plus shaping that pushes for fast shots and against stalling. Everything is divided by 25 before it is stored.</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Event</th><th>Reward (before ÷25)</th><th>Who</th></tr></thead>
+      <tbody>
+        <tr><td>Scores a goal</td><td class="n">+700</td><td>attacker / self-play</td></tr>
+        <tr><td>Concedes a goal, or causes an invalid state on own side</td><td class="n">−500</td><td>everyone</td></tr>
+        <tr><td>Shot crosses centre at under 7, 5 or 2 m/s</td><td class="n">−100 / −100 / −200 (cumulative)</td><td>attacker</td></tr>
+        <tr><td>Puck crosses centre without a clean crossing (<code>crossed == 0</code>)</td><td class="n">−200</td><td>attacker</td></tr>
+        <tr><td>Puck moving under 0.15 m/s on own side</td><td class="n">−5 per action</td><td>attacker</td></tr>
+        <tr><td>Puck on own side</td><td class="n">−0.2 per action</td><td>attacker</td></tr>
+        <tr><td>Puck speed after a crossing, while on the far side</td><td class="n">+5 × speed</td><td>attacker</td></tr>
+        <tr><td>Any action output pinned at its limit</td><td class="n">−1 each</td><td>everyone</td></tr>
+        <tr><td>Hold gate value</td><td class="n">+0.5 × gate</td><td>everyone</td></tr>
+        <tr><td>Defender lets the puck back across</td><td class="n">−10</td><td>defender</td></tr>
+        <tr><td>Defender leaves the puck slow (&lt; 0.5 m/s) on the far side</td><td class="n">+100</td><td>defender</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:1097–1109</span><span class="what">terminal rewards after each camera frame</span></div>
+<pre><code>                    terminal_rewards[:envs][entered_left_goal_mask] -= 500
+                    terminal_rewards[:envs][entered_right_goal_mask] += 700
+
+                    terminal_rewards[envs:envs+self_play][entered_left_goal_mask[:self_play]] += 700
+                    terminal_rewards[envs:][entered_right_goal_mask] -= 500.0
+
+                    err_dones[entered_left_goal_mask | entered_right_goal_mask] = True
+
+                    new_dones_fail = (np.logical_not(dones[envs+self_play:])) &amp; (defending[envs+self_play:] &amp; (puck_pos[self_play:,0] &lt; bounds[0]/2) &amp; (past_puck_pos[self_play:,0] &gt; bounds[0]/2))
+                    new_dones_success = (np.logical_not(dones[envs+self_play:])) &amp; (defending[envs+self_play:] &amp; (puck_pos[self_play:,0] &gt; bounds[0]/2) &amp; (np.linalg.norm(puck_vel[self_play:], axis=1) &lt; 0.5))
+                    dones[envs+self_play:] = dones[envs+self_play:] | new_dones_fail | new_dones_success
+                    terminal_rewards[envs+self_play:][new_dones_fail] += -10
+                    terminal_rewards[envs+self_play:][new_dones_success] += 100</code></pre>
+  </div>
+  <p>The defender's transitions are stored with their reward multiplied by 1.4.</p>
+</section>
+
+<!-- 10 -->
+<section id="sac">
+  <h2><span class="num">10</span>SAC update</h2>
+  <p class="sub">A hand-written Soft Actor-Critic step, run separately for the attacker (<code>i = 0</code>) and the defender (<code>i = 1</code>).</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 170" role="img" aria-label="SAC update steps">
+        <defs>
+          <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+          </marker>
+        </defs>
+        <rect x="10" y="40" width="150" height="80" rx="8" class="d-acc"/>
+        <text x="24" y="70" class="d-text">Sample 1024</text>
+        <text x="24" y="90" class="d-small">from replay buffer</text>
+        <rect x="190" y="40" width="160" height="80" rx="8" class="d-rl"/>
+        <text x="204" y="70" class="d-text">Critics</text>
+        <text x="204" y="90" class="d-small">MSE to r + γ(min Q′ − α·logπ)</text>
+        <rect x="380" y="40" width="160" height="80" rx="8" class="d-rl"/>
+        <text x="394" y="70" class="d-text">Policy</text>
+        <text x="394" y="90" class="d-small">minimise α·logπ − min Q</text>
+        <rect x="570" y="40" width="150" height="80" rx="8" class="d-rl"/>
+        <text x="584" y="70" class="d-text">Temperature α</text>
+        <text x="584" y="90" class="d-small">toward target entropy</text>
+        <rect x="750" y="40" width="140" height="80" rx="8" class="d-ok"/>
+        <text x="764" y="70" class="d-text">Target critics</text>
+        <text x="764" y="90" class="d-small">Polyak, τ = 0.001</text>
+        <path d="M160 80 H190" class="d-line" marker-end="url(#ah3)"/>
+        <path d="M350 80 H380" class="d-line" marker-end="url(#ah3)"/>
+        <path d="M540 80 H570" class="d-line" marker-end="url(#ah3)"/>
+        <path d="M720 80 H750" class="d-line" marker-end="url(#ah3)"/>
+        <text x="190" y="150" class="d-small">gradients clipped to norm 1.0 · log-probs clamped to [−7, 100] · γ = 0.98 · lr = 1e-5</text>
+      </svg>
+    </div>
+  </figure>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:331–411</span><span class="what">update_sac_agent() (comments trimmed)</span></div>
+<pre><code>def update_sac_agent(i, batch_size, gamma=0.99, tau=0.005):
+    # Select components for agent i
+    if i == 0:
+        buffer = policy_buffer
+    elif i == 1:
+        buffer = def_buffer
+
+    actor = policy_modules[i]
+    q1, q2 = Q_modules[2*i], Q_modules[2*i+1]
+    t_q1, t_q2 = Q_modules_target[2*i], Q_modules_target[2*i+1]
+    log_alpha = log_alphas[i]
+
+    batch, info = buffer.sample(batch_size, return_info=True)
+    batch = batch.to(DEVICE)
+    next_batch = batch.get("next")
+
+    # --- 1. Critic Update ---
+    with torch.no_grad():
+        actor(next_batch)
+
+        next_log_prob = torch.clamp(next_batch.get("action_log_prob"), -7, 100)
+        ...
+        target_q1 = t_q1(next_batch).get("q_value")
+        target_q2 = t_q2(next_batch).get("q_value")
+
+        alpha = log_alpha.exp()
+        target_q = torch.min(target_q1, target_q2) - (alpha * next_log_prob)[:,None]
+        y = next_batch.get("reward") + (1 - next_batch.get("done").float()) * gamma * target_q
+
+    q1_val = q1(batch).get("q_value")
+    q2_val = q2(batch).get("q_value")
+    q_loss = nn.functional.mse_loss(q1_val, y) + nn.functional.mse_loss(q2_val, y)
+    ...
+    actor_td = actor(batch)
+    log_prob = torch.clamp(actor_td.get("action_log_prob"), -7, 100)
+
+    q1_pi = q1(actor_td).get("q_value")
+    q2_pi = q2(actor_td).get("q_value")
+    min_q_pi = torch.min(q1_pi, q2_pi)
+    ...
+    policy_loss = (alpha.detach() * log_prob - min_q_pi).mean()
+    ...
+    alpha_loss = -(log_alpha * (log_prob + target_entropy[i]).detach()).mean()</code></pre>
+  </div>
+  <p>The function's default <code>gamma</code> and <code>tau</code> are overridden by the call, which passes the module values <code>gamma = 0.98</code> and <code>tau = 0.001</code>. Target entropies are −6 for the attacker and −4 for the defender, and both temperatures start at <code>log α = −5.5</code>.</p>
+</section>
+
+<!-- 11 -->
+<section id="loop">
+  <h2><span class="num">11</span>Training loop</h2>
+  <p class="sub">Each round collects 10 actions from every game, then runs 120 gradient steps per agent.</p>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 200" role="img" aria-label="Training round structure">
+        <defs>
+          <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" class="d-arrowhead"/>
+          </marker>
+        </defs>
+        <rect x="10" y="40" width="250" height="90" rx="8" class="d-sim"/>
+        <text x="24" y="66" class="d-text">Collect × 10 actions</text>
+        <text x="24" y="86" class="d-small">infer → take_action → run events</text>
+        <text x="24" y="104" class="d-small">until next action → rewards → buffers</text>
+        <text x="24" y="122" class="d-small">→ reset finished games</text>
+        <rect x="300" y="40" width="160" height="90" rx="8" class="d-acc"/>
+        <text x="314" y="66" class="d-text">update ≤ 40?</text>
+        <text x="314" y="86" class="d-small">yes: skip training,</text>
+        <text x="314" y="104" class="d-small">keep filling buffers</text>
+        <rect x="500" y="40" width="200" height="90" rx="8" class="d-rl"/>
+        <text x="514" y="66" class="d-text">Train</text>
+        <text x="514" y="86" class="d-small">120 × update_sac_agent(0)</text>
+        <text x="514" y="104" class="d-small">120 × update_sac_agent(1)</text>
+        <rect x="740" y="40" width="150" height="90" rx="8" class="d-ok"/>
+        <text x="754" y="66" class="d-text">Every 50 rounds</text>
+        <text x="754" y="86" class="d-small">save_checkpoint</text>
+        <text x="754" y="104" class="d-small">(save_filepath)</text>
+        <path d="M260 85 H300" class="d-line" marker-end="url(#ah4)"/>
+        <path d="M460 85 H500" class="d-line" marker-end="url(#ah4)"/>
+        <path d="M700 85 H740" class="d-line" marker-end="url(#ah4)"/>
+        <path d="M815 130 V170 H135 V130" class="d-line" marker-end="url(#ah4)"/>
+        <text x="380" y="188" class="d-small">next round (up to 500 000)</text>
+      </svg>
+    </div>
+    <figcaption>On this CPU, with 64 games, a collection round took about 7 s and a training round about 30 s in a test run.</figcaption>
+  </figure>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:926–941</span><span class="what">replay buffers and loop header</span></div>
+<pre><code>    policy_buffer = TensorDictReplayBuffer(
+        storage=LazyTensorStorage(1_500_000),
+        batch_size=batch_size,
+    )
+
+    def_buffer = TensorDictReplayBuffer(
+        storage=LazyTensorStorage(1_500_000),
+        batch_size=batch_size,
+    )
+
+    #Simulation loop
+    for update in range(500000):  # Training loop
+        print(update)
+        print("simulating...")
+
+        for timestep in range(10):</code></pre>
+  </div>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:1307–1317</span><span class="what">storing the attacker's transitions</span></div>
+<pre><code>            td = TensorDict({
+                    "observation": torch.tensor(past_obs[attack_mask], dtype=torch.float32),
+                    "action": torch.tensor(actions_np[attack_mask], dtype=torch.float32),
+                    "next": TensorDict({
+                        "reward": torch.tensor(rewards[attack_mask,None], dtype=torch.float32),
+                        "observation": torch.tensor(obs[attack_mask], dtype=torch.float32),
+                        "done": torch.tensor(dones[attack_mask,None], dtype=torch.bool),
+                    }, batch_size=[np.sum(attack_mask)]),
+                }, batch_size=[np.sum(attack_mask)])
+
+            policy_buffer.extend(td)</code></pre>
+  </div>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:1382–1431</span><span class="what">training phase and checkpointing (prints trimmed)</span></div>
+<pre><code>        if update &lt;= 40:
+            continue
+
+        print("training...")
+        ...
+        if (len(policy_buffer) &lt; batch_size) or (len(def_buffer) &lt; batch_size): # or (len(def2_buffer) &lt; batch_size):
+                print("not enough samples")
+                continue
+        samples = np.empty((3,int(1024*120/batch_size),3))
+        for j in range(int(1024*120/batch_size)):
+            ...
+            for i in range(2):
+                q_loss_val, policy_loss_val, alpha_val = update_sac_agent(i, batch_size, gamma=gamma, tau=tau)
+                samples[i,j,0] = q_loss_val
+                samples[i,j,1] = policy_loss_val
+                samples[i,j,2] = alpha_val
+            ...
+        if samples[0,:,0].mean() &lt; -1000 or samples[0,:,0].mean() &gt; 1000:
+            print("err")
+            print(1/0)
+        if (update % 50 == 0) and (update != 0):
+            save_checkpoint(save_filepath)</code></pre>
+  </div>
+
+  <div class="code rl">
+    <div class="head"><span class="file">torchRL_Training_SAC.py:28–30</span><span class="what">run settings (current values)</span></div>
+<pre><code>load_filepath = "checkpoints/SAC_237.pth" #241
+save_filepath = "checkpoints/SAC_238.pth" #Best is 12, 15, 22, 44, 76, 103, 121, 134, 142, 160, 165, 178
+train = True</code></pre>
+  </div>
+  <p>With <code>train = False</code> the script skips everything above and runs the evaluation loop that starts at line 1440, with 3 games and no exploration noise in the attacker.</p>
+</section>
+
+<!-- 12 -->
+<section id="issues">
+  <h2><span class="num">12</span>Known issues</h2>
+  <p class="sub">Things found while reading the code for this page.</p>
+
+  <div class="note">
+    <p><b>Training stops after 900 actions.</b> The training loop calls <code>sim.display_state(envs-10)</code> once per action, and that function writes a video frame and then deliberately raises an error once it has written 900 frames (15 s of video at 60 fps). With 10 actions per round, that is round 90, so only the round-50 checkpoint is ever saved.</p>
+  </div>
+  <div class="code sim">
+    <div class="head"><span class="file">Air_hockey_sim_vectorized.py:1969–1976</span><span class="what">end of display_state()</span></div>
+<pre><code>    out.write(img)
+
+    cv2.waitKey(1)  # Add small delay so window updates
+    frame_count += 1
+    if frame_count == 60*15:
+        out.release()
+        cv2.destroyAllWindows()
+        print(1/0.0)</code></pre>
+  </div>
+
+  <div class="grid">
+    <div class="card sim"><h4>Wall restitution</h4><p><code>puck_wall_res = 0.94</code> is defined, but wall bounces use <code>puck_mallet_res</code> (0.8).</p></div>
+    <div class="card sim"><h4>Collision networks off</h4><p>The <code>HeteroscedasticNN</code> collision models are never loaded or called.</p></div>
+    <div class="card rl"><h4>Frozen opponents unused</h4><p>SAC_212 and SAC_237 are loaded as opponents, but the code that would use their actions is commented out.</p></div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Code excerpts are copied from <code>Air_hockey_sim_vectorized.py</code> and <code>torchRL_Training_SAC.py</code> at commit <code>ccb283f</code>. “…” marks lines left out. See <a href="index.html">the main architecture page</a> for the hardware and the full file map.</p>
+  </div>
+</footer>
+</body>
+</html>
