@@ -25,9 +25,9 @@ import torch.nn.functional as F4
 import copy
 from torchrl.data import PrioritizedReplayBuffer, LazyTensorStorage
 
-load_filepath = "checkpoints/SAC_241.pth" #241
-save_filepath = "checkpoints/SAC_241.pth" #Best is 12, 15, 22, 44, 76, 103, 121, 134, 142, 160, 165, 178
-train = False
+load_filepath = "checkpoints/SAC_237.pth" #241
+save_filepath = "checkpoints/SAC_238.pth" #Best is 12, 15, 22, 44, 76, 103, 121, 134, 142, 160, 165, 178
+train = True
 #182, 174
 # Simulation parameters
 obs_dim = 39 #[puck_pos, opp_mallet_pos] #guess mean low stdl
