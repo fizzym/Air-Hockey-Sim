@@ -1,3 +1,25 @@
+# Air_hockey_sim_vectorized.py
+#
+# Vectorized physics simulator for the air hockey table. Every array has a leading
+# "game" axis, so thousands of independent games advance with one NumPy call.
+# State lives in module-level globals created by initalize(). Typical use:
+#   initalize(envs, ...)         create the state for `envs` games
+#   take_action(x_f, Vo)         give both mallets in every game a new target and voltage
+#   step(dt)                     advance every game by dt seconds
+#   check_state(), check_goal()  find games that ended (error or goal)
+#   reset_sim(index, ab_vars)    restart the listed games with new motor constants
+#
+# Physics is solved in closed form instead of with small fixed time steps:
+#   - Puck: straight-line flight slowed by friction and quadratic drag,
+#     m*v' = -f - B*v^2, solved exactly (dP, velocity). Bounce times are found by
+#     root-finding, then the remaining time is simulated after the bounce.
+#   - Mallet: each Core-XY axis follows a 3rd-order linear motor model driven by a
+#     bang-bang voltage (+V until time a, -V until a2, then off), so its position is a
+#     sum of exponentials (get_pos, get_xp, get_xpp).
+#
+# Shapes: mallet arrays are (game, player, x/y); puck arrays are (game, x/y).
+# Player 0 defends the left goal (x = 0), player 1 the right goal (x = width).
+# Here x runs along the table (`width`, 2.362 m) and y across it (`height`, 1.144 m).
 import math
 from scipy.optimize import fsolve, newton, brentq
 from scipy.special import lambertw
@@ -15,10 +37,12 @@ import torch.nn.functional as F
 # Initialize pygame
 print("STARTING")
 
+# Table size in metres.
 height = 1.144
 width = 2.362
 
 bounds = np.array([width, height])
+# Pixels per metre for the debug video.
 plr = 500
 screen_width = int(width*plr)
 screen_height = int(height*plr)
@@ -33,10 +57,19 @@ red = (255, 0, 0)
 green = (0, 100, 0)
 blue = (0,0,255)
 
+# Debug video written by display_state(). It is opened on import, so importing this
+# module creates (or overwrites) TableV2_Model200.avi in the working directory.
 fourcc = cv2.VideoWriter_fourcc(*'MJPG')
 out = cv2.VideoWriter("TableV2_Model200.avi", fourcc, 60.0, (screen_width, screen_height))
 frame_count = 0
 
+# Create all simulator state for `envs` games. (The function name is spelled
+# "initalize" in the code.)
+#   mallet_r, puck_r, goal_w: sizes in metres
+#   V_max:        motor voltage limit
+#   pully_radius: radius of the belt pulleys (m)
+#   ab_vars:      (envs, 2, 6) motor constants [a1, a2, a3, b1, b2, b3] per game and player
+#   puck_inits:   (envs, 2) puck start positions; reused by reset_sim()
 def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_radius=0.035306, ab_vars=None, puck_inits=None):
     global game_number 
     global time
@@ -68,6 +101,7 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     global mallet_res_model
     global bounce_reward_multiplyer
 
+    # Time since the last take_action(). Mallet trajectories are functions of it.
     time = 0
     bounce_reward_multiplyer = 1.0
 
@@ -75,34 +109,45 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     mallet_radius = mallet_r
     puck_radius = puck_r
 
+    # Random "sink" points that impulse() pulls slow pucks towards, so a puck never sits
+    # perfectly still (as on a real air table).
     sink_bounds = np.array([[puck_r, width - puck_r], [puck_r, height-puck_r]])
     sinks = np.random.rand(game_number, 2) * (sink_bounds[:,1] - sink_bounds[:,0]) + sink_bounds[:,0]
     
     goal_width = goal_w
 
+    # Vmin is not used by the simulator itself.
     Vmax = V_max
     #(game, player, x/y)
     Vmin = np.zeros((game_number,2,2), dtype="float32")
     pullyR = pully_radius
 
+    # Puck state: (game, x/y).
     puck_pos = puck_inits.copy()
     puck_vel = np.full((game_number, 2), 0, dtype="float32")
     puck_init = puck_inits
     #puck_vel[:,0] = 1.359155
     #puck_vel[:,1] = 0.98599756
 
+    # Mallet state: (game, player, x/y).
     mallet_pos = np.empty((game_number,2,2), dtype="float32")
     mallet_vel = np.empty((game_number,2,2), dtype="float32")
 
+    # Mallet position, velocity (x_p) and acceleration (x_pp) at the start of the current
+    # move. Mallets start at (0.25, 0.5) and its mirror image.
     x_0 = np.empty((game_number,2,2), dtype="float32")
     x_0[:,0,:] = [0.25, 0.5]
     x_0[:,1,:] = bounds - x_0[:,0,:]
     x_p = np.zeros((game_number,2,2), dtype="float32")
     x_pp = np.zeros((game_number,2,2), dtype="float32")
 
+    # reset_mask: games that are frozen because they ended (goal or error).
+    # reset_sim_mask: games restarted by reset_sim() since the last take_action().
     reset_mask = np.full((game_number), False)
     reset_sim_mask = np.full((game_number), False)
 
+    # Mallet limits: each mallet stays on its own half, `margin` away from the walls and
+    # the centre line. Shape (game, player, x/y, lower/upper).
     margin = 0.01
     #shape (2, 2, 2), player, x/y, lower/upper
     bounds_mallet = np.array([[[mallet_radius+margin, width/2 - mallet_radius - margin],\
@@ -113,13 +158,19 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     bounds_mallet = np.tile(np.expand_dims(bounds_mallet, axis=0), (game_number,1,1,1))
 
     # x/y, lower/upper
+    # Puck centre limits (walls minus the puck radius). Shape (game, x/y, lower/upper).
     bounds_puck = np.array([[puck_radius, width - puck_radius], [puck_radius, height - puck_radius]])
     bounds_puck = np.tile(np.expand_dims(bounds_puck, axis=0), (game_number,1,1))
                     
+    # Puck physics, varied slightly per game (domain randomization):
+    # drag coefficient B, friction force f, mass m.
     drag = 0.007901 + np.random.random((game_number,))*0.0004
     friction = 0.0003363 + np.random.random((game_number,))*0.00004
     mass = 0.03692278 + np.random.random((game_number,)) * 0.001
 
+    # Small network that predicts bounce angle and speed (with uncertainty), learned from
+    # real collisions. It is defined here but the lines that load and use it are commented
+    # out, so every bounce uses the fixed restitution value below.
     class HeteroscedasticNN(nn.Module):
         def __init__(self, input_dim=2, hidden_dim=10, output_dim=2):
             super(HeteroscedasticNN, self).__init__()
@@ -156,6 +207,8 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     #mallet_res_model.to('cpu')
     #mallet_res_model.eval()
 
+    # Restitution: fraction of speed kept after a bounce. puck_wall_res is not used:
+    # wall and corner bounces also use puck_mallet_res.
     global puck_wall_res
     global puck_mallet_res
 
@@ -183,6 +236,10 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     #b3 = 0
 
     #(game, player, x/y)
+    # Motor model per axis. A Core-XY gantry moves x with (motor A - motor B) and y with
+    # (A + B), so each axis combines the constants as a-b (x) or a+b (y). Each axis obeys
+    #     C5*x''' + C6*x'' + C7*x' = C1*u(t),   u = +1, -1 or 0
+    # where C1 is set from the commanded voltage in update_path().
     C5 = np.empty((game_number,2,2))
     C5[:,:,0] = ab_vars[:,:,0] - ab_vars[:,:,3]
     C5[:,:,1] = ab_vars[:,:,0] + ab_vars[:,:,3] #[a1-b1, a1+b1]
@@ -191,10 +248,13 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     C6[:,:,0] = ab_vars[:,:,1] - ab_vars[:,:,4]
     C6[:,:,1] = ab_vars[:,:,1] + ab_vars[:,:,4] #[a2-b2, a2+b2]
 
+    # Note: reset_sim() uses a3 alone for C7 on both axes instead of a3-b3 / a3+b3, so a
+    # game's motor model changes slightly after its first reset.
     C7 = np.empty((game_number,2,2))
     C7[:,:,0] = ab_vars[:,:,2] - ab_vars[:,:,5]
     C7[:,:,1] = ab_vars[:,:,2] + ab_vars[:,:,5] #[a3-b3, a3+b3]
 
+    # Roots of C5*s^2 + C6*s + C7 = 0: the two exponential rates, stored in ab.
     A = np.sqrt(np.square(C6) - 4 * C5 * C7)
     B = 2 * np.square(C7) * A
 
@@ -202,6 +262,9 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     ab = np.stack([(-C6-A)/(2*C5),(-C6+A)/(2*C5)], axis=-1)
 
     #(game_number, player, x/y, coefficients in A e^(at) + B e^(bt) + Ct + D)
+    # Response to a constant input: CE0*e^(a t) + CE1*e^(b t) + CE2*t + CE3.
+    # A2CE, A3CE and A4CE (below) are the responses that carry the starting acceleration,
+    # velocity and position of a move (through C2, C3 and C4).
     CE = np.stack(
         [(-np.square(C6) + A*C6+2*C5*C7)/B,
         (np.square(C6)+A*C6-2*C5*C7)/B,
@@ -233,6 +296,7 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     )
 
     #(game,player,x/y)
+    # C1: input amplitude (voltage * pulley radius / 2). C2-C4: starting conditions.
     C1 = np.full((game_number, 2, 2), 14*pullyR / 2)
     C2 = C5*x_pp + C6 * x_p + C7 * x_0
     C3 = C5 * x_p + C6 * x_0
@@ -247,6 +311,8 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
 
 
     #(game, player, x/y)
+    # Move targets, and the voltage switch times of the current move:
+    # +V from 0 to a, -V from a to a2, then off.
     x_f = np.copy(x_0)
     #(game, player, x/y)
     a = np.full((game_number, 2, 2), 0.0)
@@ -255,6 +321,7 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
 
     Ts = 0.2
 
+    # Where each mallet would stop if it braked at once (see update_path).
     x_over = np.zeros((game_number, 2, 2), dtype="float32")
 
     #(game, player, x/y, min/max)
@@ -266,12 +333,21 @@ def initalize(envs, mallet_r=0.05, puck_r=0.05, goal_w=0.35, V_max=24, pully_rad
     overshoot_mask = np.full((game_number, 2, 2), True)
 
 
+# ---- Puck flight between collisions ------------------------------------------
+# Along its direction of travel the puck obeys m*v' = -f - B*v^2. With C = getC(v0)
+# and D = getD(C) the exact solution is
+#   distance(t) = (m/B) * ln(cos(sqrt(B f) (C m + t) / m)) + D
+#   speed(t)    = -sqrt(f/B) * tan(sqrt(B f) (C m + t) / m)
+# The puck stops at t = -C*m (get_tPZero) and stays still after that.
+#
+# Distance travelled after time t (clamped at the stopping time).
 def dP(t, B, f, mass, C, D):
     tpZero = get_tPZero(mass,C)
     t = np.minimum(tpZero, t)
     p = (mass/B) * np.log(np.cos((np.sqrt(B*f)*(C*mass+t))/mass)) + D
     return p
 
+# Speed after time t; 0 once the puck has stopped.
 def velocity(t, B, f, mass, C):
     tpZero = get_tPZero(mass,C)
     v = np.zeros_like(t)
@@ -279,31 +355,42 @@ def velocity(t, B, f, mass, C):
     v[v_mask] = -np.sqrt(f/B)[v_mask] * np.tan(((np.sqrt(B*f)*(C*mass+t))/mass)[v_mask])
     return v
 
+# velocity() for a single game.
 def velocity_scalar(t, B, f, mass, C):
     tpZero = -C*mass
     if t < tpZero:
         return -np.sqrt(f/B) * np.tan(((np.sqrt(B*f)*(C*mass+t))/mass))
     return 0
 
+# Time at which the puck stops.
 def get_tPZero(mass, C):
     return -C*mass
 
+# Integration constant C from the starting speed v_norm.
 def getC(v_norm, B, f):
     return - np.arctan(v_norm * np.sqrt(B/f)) / np.sqrt(B*f)
 
+# Integration constant D, chosen so that distance(0) = 0.
 def getD(B, mass, f, C):
     return - (mass/B) * np.log(np.cos(np.sqrt(B*f)*C))
 
+# Zero when the puck has travelled `dist`. Root-finding this gives wall hit times.
 def distance_to_wall(t, dist, B, f, mass, C, D):
     return dP(t, B, f, mass, C, D) - dist
 
 
+# Bounce off a goal-post corner (point A) in one game. Finds where the puck's edge
+# first touches A along its straight path and the time it gets there, then reflects
+# the velocity about the line from A to the puck centre.
+# Returns (new_pos, new_vel, collided?, time left over after the hit).
 def corner_collision(A, pos, vel, t, C, D, v_norm, dir, dPdt,B,f,mass, vt):
+    # Quadratic in the path parameter s for |pos + s*vel - A| = puck_radius.
     a = vel[0]**2 + vel[1]**2
     b = 2*pos[0]*vel[0] + 2*pos[1]*vel[1]-2*A[0]*vel[0]-2*A[1]*vel[1]
     c = pos[0]**2+pos[1]**2+A[0]**2+A[1]**2-puck_radius**2-2*A[0]*pos[0]-2*A[1]*pos[1]
 
     disc = b**2 - 4*a*c
+    # The path misses the corner: fly for the whole time t.
     if disc < 0:
         new_vel = [0,0]
         new_pos = [0,0]
@@ -319,6 +406,7 @@ def corner_collision(A, pos, vel, t, C, D, v_norm, dir, dPdt,B,f,mass, vt):
     new_pos[1] = pos[1] + s * vel[1]
     wall_val = s * v_norm
 
+    # Time of the hit; -1 means the puck stops before reaching the corner.
     thit_min = -1
     if wall_val < 1e-8:
         thit_min = 1e-8
@@ -344,6 +432,8 @@ def corner_collision(A, pos, vel, t, C, D, v_norm, dir, dPdt,B,f,mass, vt):
                 new_vel[j] = vt * dir[j]
         return new_pos, new_vel, False, 0
 
+    # Reflect about the corner normal: reverse the normal part of the velocity, keep the
+    # tangential direction, and scale the speed by the restitution.
     vt_hit = velocity_scalar(thit_min, B, f, mass, C)
     for j in range(2):
         new_vel[j] = vt_hit * dir[j]
@@ -370,6 +460,9 @@ def corner_collision(A, pos, vel, t, C, D, v_norm, dir, dPdt,B,f,mass, vt):
 
     return new_pos, new_vel, True, t - thit_min
 
+# For a puck partly inside a goal mouth, check whether its edge will hit a goal-post
+# corner instead of going in. w1 and w2 are the puck's two side edges (perpendicular
+# to its motion). Returns (corner point A, bounces?).
 def check_in_goal_corner_bounce(vel, pos, v_norm):
     A = [0,0]
     bounces = False
@@ -441,6 +534,7 @@ def check_in_goal_corner_bounce(vel, pos, v_norm):
         if bounces:
             A[0] = surface[0] 
 
+    # Pick the corner (top or bottom post) that is hit first.
     if bounces:
         if vel[0] != 0:
             if s1 < s2:
@@ -461,6 +555,12 @@ def check_in_goal_corner_bounce(vel, pos, v_norm):
     return A, bounces
 
 
+# Find and resolve puck-mallet hits for the games in `mask` during the next dt_col
+# seconds. Both bodies move: the puck along its closed-form path, the mallets along
+# their motor trajectories. The loop repeatedly jumps ahead by a safe time from
+# puck_mallet_collision_t() (a lower bound on when contact could happen) until the
+# puck touches a mallet or the time runs out.
+# Returns (new_pos, new_vel, time used, collided mask).
 def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, massm, vpf, x_m):
 
     dt_dynamic = np.empty_like(dt_col)
@@ -474,6 +574,7 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
 
     mask_indicies = np.where(mask)[0]
 
+    # Mallet trajectory coefficients for just these games.
     CEm = CE[mask]
     A2CEm = A2CE[mask]
     A3CEm = A3CE[mask]
@@ -502,6 +603,7 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
     v_m_a2 = np.full((len(collision_unknown), 2, 2), 1.0)
 
     #counter = 0
+    # Step forward in safe jumps until each game has collided or used up dt_col.
     while True:
 
         if np.any(np.tile(full_timem[:,np.newaxis,np.newaxis], (1,2,2)) > a2m):
@@ -530,6 +632,7 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
         if not np.any(collision_unknown):
             break
 
+        # Puck and mallet positions at the new time.
         dpp = dP(dt_sum[collision_unknown], Bm[collision_unknown], fm[collision_unknown],\
                                            massm[collision_unknown], C[collision_unknown], D[collision_unknown])
         x_p = pos[collision_unknown] + np.tile(dpp[:,np.newaxis], (1,2)) * dir[collision_unknown]
@@ -565,6 +668,7 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
         x_m = get_pos_mask(full_timem, CEm, A2CEm, A3CEm, A4CEm, abm, am, a2m, C1m, C2m, C3m, C4m)
         v_m = get_xp_mask(full_timem, CEm, A2CEm, A3CEm, A4CEm, abm, am, a2m, C1m, C2m, C3m, C4m)
 
+        # Is the puck now touching mallet 0 or mallet 1?
         colided_mask_m1 = ((x_p[:,0] - x_m[:,0,0])**2 + (x_p[:,1]-x_m[:,0,1])**2) < radius_col
         colided_mask_m2 = (((x_p[:,0] - x_m[:,1,0])**2 + (x_p[:,1]-x_m[:,1,1])**2) < radius_col) & ~colided_mask_m1
     
@@ -591,6 +695,7 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
         collision_indices_m1 = []
         collision_indices_m2 = []
 
+        # Only count a hit if puck and mallet are moving towards each other.
         if np.any(colided_mask_m1):
             v_rel = (v_p - v_m[:,0,:])[colided_mask_m1]
             normal = (x_p - x_m[:,0,:])[colided_mask_m1]
@@ -601,6 +706,8 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
             failed_indicies = colided_mask_m1_indicies[np.logical_not(passed_mask)]
             colided_mask_m1[failed_indicies] = False
 
+        # Bounce in the mallet's frame: reverse the normal part of the relative velocity,
+        # scale by the restitution, then add the mallet's velocity back.
         if np.any(colided_mask_m1):
             v_rel = v_rel[passed_mask]
             normal = normal[passed_mask]
@@ -626,6 +733,7 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
             new_pos[collision_indices_m1] = x_p[colided_mask_m1]
             new_vel[collision_indices_m1] = v_p_col
 
+        # Same for mallet 1.
         if np.any(colided_mask_m2):
             v_rel = (v_p - v_m[:,1,:])[colided_mask_m2]
             normal = (x_p - x_m[:,1,:])[colided_mask_m2]
@@ -661,6 +769,7 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
             new_pos[collision_indices_m2] = x_p[colided_mask_m2]
             new_vel[collision_indices_m2] = v_p_col
 
+        # Games that collided are finished; keep stepping the rest.
         collision_indicies = np.sort(np.concatenate((np.array(collision_indices_m1, dtype="int"), np.array(collision_indices_m2, dtype="int"))))
 
         if len(collision_indicies) > 0:
@@ -683,6 +792,10 @@ def puck_mallet_collision(mask, pos, vel, dir, dt_col, t_init, C, D, Bm, fm, mas
     return new_pos, new_vel, dt_sum, collision_mask 
 
 
+# Conservative time until the puck could first touch either mallet. It assumes the
+# mallet moves at its highest possible speed in the worst direction, so jumping ahead
+# by this time can never skip past a collision. Returns one time per game
+# (-1 = no contact possible).
 def puck_mallet_collision_t(x_p, x_m, v_p, v_m, vpf, d_p, t, v_m_a2, am, a2m, C1m, CEm):
     #(game, player)
 
@@ -745,6 +858,16 @@ def puck_mallet_collision_t(x_p, x_m, v_p, v_m, vpf, d_p, t, v_m_a2, am, a2m, C1
     return t
 
 
+# Advance the puck in the games selected by `mask` by up to t seconds, stopping at the
+# first collision (wall, goal-post corner or mallet).
+# Returns the new position and velocity, the time still left for games that collided
+# (recurr_time) and which games need another call (recurr_mask). step() calls this
+# repeatedly until no game has time left.
+# When the puck crosses the centre line it also predicts, with step_noM(), whether the
+# shot would score if nobody touched it. That score (2.3 for a shot that misses the
+# mallets, 0.5 if it would pass a mallet; times bounce_reward_multiplyer for bank
+# shots) is returned as cross_left / cross_right and used in the training reward.
+# no_M=True is used by step_noM() to move the puck with the mallets ignored.
 def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, indicies=False, noM_xm = None, calculate_cross_left = False):
     if no_M:
         vel = noM_vel[mask]
@@ -754,6 +877,8 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
         pos = puck_pos[mask]
     v_norm = np.sqrt(np.sum(vel**2, axis=1))
 
+    # If the puck overlaps a mallet, push it out until they just touch. If that does not
+    # work, move the puck off the table so check_state() resets the game.
     if not no_M:
         global_mask = mask#np.where(mask)[0]
         full_time = np.zeros((game_number))
@@ -794,6 +919,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
     recurr_mask_m = np.full((len(v_norm)), False)
     recurr_time_m = np.zeros_like(t, dtype="float32")
 
+    # Games where the puck is moving and still on the table.
     v_norm_mask = (v_norm != 0) & np.logical_not(((pos[:,0] < 0) | (pos[:,0] > surface[0])))
 
     if np.any(~v_norm_mask):
@@ -810,6 +936,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
     massm = mass[mask]
     bounds_puckm = bounds_puck[mask]
  
+    # Flight constants, and the distance/speed after the full time t with no collision.
     C = getC(v_norm, Bm, fm)
     D = getD(Bm, massm, fm, C)
     C[~v_norm_mask] = 0
@@ -818,6 +945,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
     vt = velocity(t, Bm, fm, massm, C)
 
     #check if it lies outside the playing area (i.e. somewhat in the goal) and will collide with a corner
+    # Puck partly inside a goal mouth: check for goal-post corner bounces first.
     in_goal_mask = np.logical_or(pos[:,0] < bounds_puck[mask][:,0,0], pos[:,0] > bounds_puck[mask][:,0,1]) & v_norm_mask
 
     if np.any(in_goal_mask):
@@ -832,6 +960,8 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
 
 
     #Compute which wall it will hit if it keeps moving
+    # Distance s along the path to the nearest wall. A wall is hit if s is shorter than the
+    # distance travelled in time t.
     vel_x_0 = (vel[:,0] == 0)
     vel_y_0 = (vel[:,1] == 0)
 
@@ -857,6 +987,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
     hit_wall_mask = (s < dPdt) & v_norm_mask
     
     #(game, lower/upper)
+    # Where the path meets the end walls; inside the goal mouth means it goes in.
     side_bounds = np.full_like(pos, (0, surface[0]))
     y_hit = vel[:,1, None] * side_bounds / vel[:,0, None] + pos[:,1,None] - vel[:,1, None] * pos[:,0,None] / vel[:,0, None]
     y_hit = np.where(vel[:,0] > 0, y_hit[:,1], y_hit[:,0]) 
@@ -874,6 +1005,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
     
     corner_hit_mask = np.full_like(hit_wall_mask, False)
     
+    # A wall hit inside the goal-mouth range is really a goal-post corner hit.
     if np.any(hit_wall_mask):
         wall_dist = s[hit_wall_mask]
         wall = np.argmin(s_xy[hit_wall_mask], axis=1)
@@ -890,6 +1022,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
     #if not no_M:
     #    side_wall = np.full(new_vel.shape, False)
 
+    # Exact hit time by root-finding, then reflect the velocity off the wall.
     if np.any(hit_wall_mask):
         wall_dist = s[hit_wall_mask]
         wall = np.argmin(s_xy[hit_wall_mask], axis=1)
@@ -940,6 +1073,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
         recurr_time_m[hit_wall_mask] = tw-root
 
 
+    # Goal-post corner hits.
     if np.any(corner_hit_mask):
         point_A = np.empty((len(corner_hit_indicies), 2))
         point_A[:,0] = np.where(vel[corner_hit_mask][:,0] > 0, surface[0], 0)
@@ -952,6 +1086,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
                                                                                                 dir[idx], dPdt[idx],Bm[idx],fm[idx],massm[idx], vt[idx])
             i += 1
 
+    # No collision: fly for the whole time t.
     no_col_mask = ~hit_wall_mask & ~corner_hit_mask & v_norm_mask
     if np.any(no_col_mask):
         Bmw = Bm[no_col_mask]
@@ -964,6 +1099,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
         new_vel[no_col_mask] = np.tile(vt[no_col_mask][:, np.newaxis], (1, 2)) * dir[no_col_mask]
         recurr_mask_m[no_col_mask] = False
 
+    # Mallet hits during the time not already used up by a wall hit.
     if not no_M:
         dt_col = np.where(recurr_mask_m, t-recurr_time_m, t)
         vpf = velocity(dt_col, Bm, fm, massm, C)
@@ -983,6 +1119,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
 
         #return new_pos, new_vel, recurr_time_m, recurr_mask_m #, pm_mask, side_wall
 
+        # Did the puck cross the centre line (by a puck radius) in this step?
         crossed_to_left = (new_pos[:,0] < surface[0]/2 - puck_radius) & (vel[:,0] < 0) & (pos[:,0] > surface[0]/2 - puck_radius)
         crossed_to_right = (new_pos[:,0] > surface[0]/2 + puck_radius) & (vel[:,0] > 0) & (pos[:,0] < surface[0]/2 + puck_radius)
 
@@ -990,6 +1127,8 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
             cross_left = np.full_like(recurr_time_m, -1)
         cross_right = np.full_like(recurr_time_m, -1)
 
+        # Predict the shot: find the puck's state as it crosses, then run it on with the
+        # mallets ignored (step_noM) to see if it would reach the goal.
         if calculate_cross_left and np.any(crossed_to_left):
             dist = np.sqrt(np.sum((pos[crossed_to_left] - new_pos[crossed_to_left])**2, axis=1)) * (pos[crossed_to_left,0] - (surface[0]/2-puck_radius)) / (pos[crossed_to_left,0] - new_pos[crossed_to_left,0])
             speed = np.sqrt(np.sum(vel[crossed_to_left]**2, axis=1))
@@ -1081,6 +1220,7 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
         else:
             return new_pos, new_vel, recurr_time_m, recurr_mask_m, times_scored/20.0, cross_right 
 
+    # step_noM() mode: also report whether this path segment passes close to a mallet.
     if noM_xm is not None:
         mpd = np.sum((noM_xm[:,0,:]-pos) * dir, axis=1)
         mpd2 = np.sum((noM_xm[:,1,:]-pos) * dir, axis=1)
@@ -1101,6 +1241,9 @@ def update_puck(t, mask, t_init, no_M = False, noM_pos = None, noM_vel = None, i
     return new_pos, new_vel, recurr_time_m, recurr_mask_m
 
 #A e^(at) + B e^(bt) + Ct + D
+# ---- Mallet trajectory --------------------------------------------------------
+# Response to a constant input at time x, for every game, player and axis:
+# A e^(a x) + B e^(b x) + C x + D.
 def f(x, exponentials):
     #x: float
     #exponentials: (gamenumber, player, x/y, a/b)
@@ -1109,24 +1252,28 @@ def f(x, exponentials):
            + CE[:,:,:,1] * exponentials[:,:,:,1] + CE[:,:,:,2]*x+CE[:,:,:,3]
 
 
+# f() evaluated at shifted times tms (used for the voltage switches).
 def g(tms):
     #tms: game, player, x/y, a/b
     tms_tile = np.tile(np.expand_dims(tms, axis=-1), (1,1,1,2))
     exponentials = np.exp(ab*tms_tile)
     return f(tms, exponentials)
 
+# First time derivative of g().
 def g_x(tms):
     tms_tile = np.tile(np.expand_dims(tms, axis=-1), (1,1,1,2))
     exponentials =  ab * np.exp(ab*tms_tile)
     return CE[:,:,:,0] * exponentials[:,:,:,0] +\
                     CE[:,:,:,1] * exponentials[:,:,:,1] + CE[:,:,:,2]
 
+# Variant of g_x() with doubled exponential terms, used by a_error_prime().
 def g_x_a(tms):
     tms_tile = np.tile(np.expand_dims(tms, axis=-1), (1,1,1,2))
     exponentials =  2 * ab * np.exp(ab*tms_tile)
     return CE[:,:,:,0] * exponentials[:,:,:,0] +\
                     CE[:,:,:,1] * exponentials[:,:,:,1] + CE[:,:,:,2]
 
+# Second time derivative of g().
 def g_xx(tms):
     tms_tile = np.tile(np.expand_dims(tms, axis=-1), (1,1,1,2))
     exponentials =  np.square(ab) * np.exp(ab*tms_tile)
@@ -1134,6 +1281,10 @@ def g_xx(tms):
                     CE[:,:,:,1] * exponentials[:,:,:,1]
 
 
+# Mallet positions at time t (since the last action), shape (game, player, x/y).
+# The voltage is +V until a, -V until a2, then off, so the constant-input response is
+# added once, subtracted twice from a, and added back from a2:
+#   x(t) = C1*(f(t) - 2 f(t-a) + f(t-a2)) + C2*A2(t) + C3*A3(t) + C4*A4(t)
 def get_pos(t):
     #t: (gamenumber)
     #returns: (game,player,x/y)
@@ -1172,6 +1323,7 @@ def get_pos(t):
 
     return C1 * (f_t - 2*g_a1 + g_a2) + C2 * A2 + C3 * A3 + C4 * A4
 
+# get_pos() for a subset of games, with their coefficients passed in.
 def get_pos_mask(t, CEm, A2CEm, A3CEm, A4CEm, abm, am, a2m, C1m, C2m, C3m, C4m):
     #t: (gamenumber)
     #returns: (game,player,x/y)
@@ -1215,6 +1367,7 @@ def get_pos_mask(t, CEm, A2CEm, A3CEm, A4CEm, abm, am, a2m, C1m, C2m, C3m, C4m):
     return C1m * (f_t - 2*g_a1 + g_a2) + C2m * A2 + C3m * A3 + C4m * A4
 
 
+# Mallet velocities at time t (time derivative of get_pos).
 def get_xp(t):
     #t: (gamenumber)
 
@@ -1243,6 +1396,7 @@ def get_xp(t):
     return C1 * (f_t - 2*g_a1 + g_a2) + C2 * A2 + C3 * A3 + C4 * A4
 
 
+# get_xp() for a subset of games.
 def get_xp_mask(t, CEm, A2CEm, A3CEm, A4CEm, abm, am, a2m, C1m, C2m, C3m, C4m):
     #t: (gamenumber)
 
@@ -1277,6 +1431,7 @@ def get_xp_mask(t, CEm, A2CEm, A3CEm, A4CEm, abm, am, a2m, C1m, C2m, C3m, C4m):
 
     return C1m * (f_t - 2*g_a1 + g_a2) + C2m * A2 + C3m * A3 + C4m * A4
 
+# Mallet velocity at the moment the voltage switches off (t = a2), for a subset of games.
 def get_xp_mask_a2(CEm, A2CEm, A3CEm, A4CEm, abm, am, a2m, C1m, C2m, C3m, C4m):
     #t: (gamenumber)
 
@@ -1305,6 +1460,7 @@ def get_xp_mask_a2(CEm, A2CEm, A3CEm, A4CEm, abm, am, a2m, C1m, C2m, C3m, C4m):
     return C1m * (f_t - 2*g_a1) + C2m * A2 + C3m * A3 + C4m * A4
 
 
+# Mallet accelerations at time t.
 def get_xpp(t):
 
     #(gamenumber, player, x/y, a/b)
@@ -1331,6 +1487,8 @@ def get_xpp(t):
     return C1 * (f_t - 2*g_a1 + g_a2) + C2 * A2 + C3 * A3 + C4 * A4
 
 # c = C2[i,j,k]*A2CE[i,j,k,1]+C3[i,j,k]*A3CE[i,j,k,1]+C4[i,j,k]*A4CE[i,j,k,1]
+# Helpers for update_path(): find the voltage at which an overshooting move just
+# reaches the upper (Cp1) or lower (Cn1) mallet limit. *_prime are derivatives.
 def solve_Cp1(x,i,j,k,c):
     if x <= 0:
         return C2[i,j,k]/C7[i,j,k] - bounds_mallet[i,j,k,1]
@@ -1371,6 +1529,9 @@ def solve_Cn1_prime2(x,i,j,k,c):
     e = (-x*CE[i,j,k,1]+c)
     return (-1/(ab[i,j,k,1]*C7[i,j,k])) * (1/x + 2*CE[i,j,k,1]/e + x*CE[i,j,k,1]**2/e**2)
 
+# Mallet position error at the end of a move (t = a2) for a trial switch time x.
+# solve_a() finds x where this is 0, so the mallet comes to rest at x_f.
+# The off time follows from x: a2 = 2x - x_f*C7/C1 + C2/C1.
 def a_error(x):
     #x: (game, player, x/y)
     a2x = (2*x - x_f*C7/C1+C2/C1)
@@ -1392,6 +1553,7 @@ def a_error(x):
 
     return C1*(f_t-2*g_a1+g_a2) + C2*A2+C3*A3+C4*A4 - x_f
 
+# Derivative of a_error() with respect to x, for Newton's method.
 def a_error_prime(x):
     #x: (game, player, x/y)
     a2x = (2*x - x_f*C7/C1+C2/C1)
@@ -1413,6 +1575,9 @@ def a_error_prime(x):
     #err = np.where(neg_mask, 1-a2x, np.where(less_than_ax_mask, 1+))
     return C1*(f_t-2*g_a1) + C2*A2+C3*A3+C4*A4
 
+# Newton's method for the switch time a in every game at once, kept above x_min so
+# that a2 >= a. If it has not converged to 1e-10 after 100 steps the last estimate is
+# used.
 def solve_a():
     global x_over
     x_min = np.maximum(x_f * C7/C1 - C2/C1, 0)
@@ -1475,6 +1640,13 @@ def solve_a():
 
     return x0
 
+# Plan new mallet trajectories after an action. xf (target) and Vo (voltage) are
+# shaped (game, player, x/y). Steps:
+#   1. read the current position, velocity and acceleration into C2-C4
+#   2. set the input amplitude C1 from Vo
+#   3. if the move would overshoot the target, flip the voltage; if it would run past
+#      a table limit, lower the voltage (x and y together may not exceed 2*Vmax)
+#   4. solve for the switch times a and a2
 def update_path(time, xf, Vo, reset_mask):
     global C1
     global C2
@@ -1496,12 +1668,14 @@ def update_path(time, xf, Vo, reset_mask):
     x_f = xf
 
     #(game, player, x/y)
+    # Current state, read from the previous trajectory at the current time.
     x_0 = get_pos(np.full((game_number),time))
     x_0 = np.maximum(x_0, bounds_mallet[:,:,:,0]+1e-8)
     x_0 = np.minimum(x_0, bounds_mallet[:,:,:,1]-1e-8)
     x_p = get_xp(np.full((game_number),time))
     x_pp = get_xpp(time)
 
+    # Games that were reset start from rest.
     x_0[reset_mask] = mallet_pos[reset_mask]
     x_p[reset_mask] = 0
     x_pp[reset_mask] = 0
@@ -1526,6 +1700,7 @@ def update_path(time, xf, Vo, reset_mask):
                                    np.logical_xor(x_0 > x_f0, x_0 > x_f))
 
     C1 = np.where(overshoot_mask & (x_f0 < x_0), -C1, C1)
+    # x_over: where the mallet would stop if it braked at full voltage now.
     x_over = np.empty_like(x_over)
     log_arg = (C1[overshoot_mask]*CE[:,:,:,3][overshoot_mask])/(-C1[overshoot_mask]*CE[:,:,:,1][overshoot_mask]+C2[overshoot_mask]*A2CE[:,:,:,1][overshoot_mask]+C3[overshoot_mask]*A3CE[:,:,:,1][overshoot_mask]+C4[overshoot_mask]*A4CE[:,:,:,1][overshoot_mask])
     x_over[overshoot_mask] = C2[overshoot_mask]/C7[overshoot_mask] - C1[overshoot_mask]/(ab[:,:,:,1][overshoot_mask]*C7[overshoot_mask]) * np.log(log_arg)
@@ -1535,6 +1710,7 @@ def update_path(time, xf, Vo, reset_mask):
     #                    C2/C7 - (C1/(ab[:,:,:,1]*C7) * np.log(log_arg)),\
     #                    x_0)
 
+    # Moves that would run past a mallet limit: lower the voltage until they just reach it.
     outofbounds_mask_p = (x_over > bounds_mallet[:,:,:,1])
     outofbounds_mask_n = (x_over < bounds_mallet[:,:,:,0])
 
@@ -1618,6 +1794,7 @@ def update_path(time, xf, Vo, reset_mask):
                     
             x_over[i,j,k] = bounds_mallet[i,j,k,0]
 
+    # Final voltage sign: towards the target (or away from it when braking an overshoot).
     C1 = np.abs(C1)
     
     #(game, player, x/y, min/max)
@@ -1631,9 +1808,15 @@ def update_path(time, xf, Vo, reset_mask):
     C1 = np.where(C1neg_mask, -C1, C1)
 
     #(game_number, 2, 2)
+    # Switch times of the bang-bang profile.
     a = solve_a()
     a2 = 2*a - x_f*C7/C1+C2/C1
 
+# Advance every game by t seconds. The puck is moved collision by collision
+# (update_puck) until each game has used up t, then the mallets are placed on their
+# planned trajectories. Returns (mallet_pos, mallet_vel, puck_pos, puck_vel, a, b).
+# With calculate_cross_left=True, a and b are the shot scores for crossings to the
+# left and right (see update_puck); otherwise a is unused and b is cross_right.
 def step(t, calculate_cross_left = False):
     global time
     global puck_pos
@@ -1654,10 +1837,12 @@ def step(t, calculate_cross_left = False):
         cross_left = np.full((game_number), -1.0)
         while np.any(recurr_mask):
             counter += 1
+            # Safety: a puck still bouncing after 100 rounds is moved off the table so check_state() resets it.
             if counter == 100:
                 puck_pos[recurr_mask] = np.array([1,-1])
                 puck_vel[recurr_mask] = np.array([0,0])
             #clock.tick(60)
+            # Once few games remain, use an index array instead of a boolean mask (faster).
             if recurr_mask.sum() / len(recurr_mask) < 0.1 and not indexed:
                 indexed = True
                 recurr_mask = np.array(np.where(recurr_mask)[0])
@@ -1684,6 +1869,7 @@ def step(t, calculate_cross_left = False):
             #print(counter)
             
             #print("---")
+        # Mallets follow their planned trajectories; frozen (reset) games stay where they are.
         time += t
         mallet_pos[np.logical_not(reset_mask)] = get_pos(np.full((game_number), time))[np.logical_not(reset_mask)]
         mallet_vel[np.logical_not(reset_mask)] = get_xp(np.full((game_number),time))[np.logical_not(reset_mask)]
@@ -1693,6 +1879,7 @@ def step(t, calculate_cross_left = False):
     score_avg = np.full((game_number), 0.0)
     while np.any(recurr_mask):
         counter += 1
+        # Safety: a puck still bouncing after 10 rounds is moved off the table so check_state() resets it.
         if counter == 10:
             puck_pos[recurr_mask] = np.array([1,-1])
             puck_vel[recurr_mask] = np.array([0,0])
@@ -1715,6 +1902,9 @@ def step(t, calculate_cross_left = False):
 
     return mallet_pos, mallet_vel, puck_pos, puck_vel, score_avg, cross_right
 
+# Gently push slow pucks (< 0.15 m/s) towards a randomly wandering sink point, like the
+# small drifts on a real air table. epsilon is how far each sink moves per call;
+# delta is overridden to 0.001 m/s.
 def impulse(epsilon, delta):
     global puck_vel
     global puck_pos
@@ -1763,6 +1953,10 @@ def impulse(epsilon, delta):
     needs_boost[:int(game_number/2)] = False
     puck_vel[needs_boost] += boost*(unit_direction)[needs_boost]
     """
+# Run the puck for t seconds with the mallets ignored, to predict where a shot ends up.
+# With x_mc (mallet positions at the crossing) it also returns whether the path passes
+# a mallet (hitM) and whether it reached the end zone without a side-wall bounce
+# (straight_shot).
 def step_noM(t, puck_pos_noM = None, puck_vel_noM = None, recurr_mask=None, x_mc = None):
     
     if puck_pos_noM is None:
@@ -1810,6 +2004,9 @@ def step_noM(t, puck_pos_noM = None, puck_vel_noM = None, recurr_mask=None, x_mc
 
     return puck_pos_noM2[recurr_mask_copy], puck_vel_noM2[recurr_mask_copy]
 
+# Start new mallet moves in every game. x_f and Vo are (game, player, x/y) in table
+# coordinates. The simulator clock restarts at 0, so step() times are measured from
+# this action. Games restarted by reset_sim() are unfrozen here.
 def take_action(x_f, Vo):
     global time
     global reset_mask
@@ -1820,12 +2017,15 @@ def take_action(x_f, Vo):
     reset_sim_mask = np.full((game_number), False)
     time = 0
 
+# Accessors used by other scripts.
 def get_xf0():
     return C2 * A2CE[:,:,:,2]
 
 def get_a():
     return a
 
+# Find games in an invalid state: puck off the table (other than through a goal) or
+# overlapping a mallet. They are frozen in reset_mask and their indices are returned.
 def check_state():
     global reset_mask
     #[n, index]
@@ -1876,6 +2076,8 @@ def check_state():
     
     return index_np
         
+# Find games where the puck has just entered the left goal (x < 0) or the right goal
+# (x > width). They are frozen in reset_mask and the two masks are returned.
 def check_goal():
     global reset_mask
     entered_left_goal_mask = np.logical_and(puck_pos[:,0] < 0, np.logical_not(reset_mask))
@@ -1902,6 +2104,7 @@ def check_goal():
 
     return entered_left_goal_mask, entered_right_goal_mask
 
+# Older pygame version of display_state(), kept as a string.
 """
 def display_state(index, puck_pos_noM=None):
     screen.fill(white)
@@ -1924,6 +2127,9 @@ def display_state(index, puck_pos_noM=None):
     pygame.display.flip()
 """
 
+# Draw game `index` in a window and append the frame to the debug video.
+# WARNING: after 900 frames (15 s at 60 fps) it closes the video and deliberately
+# raises ZeroDivisionError (print(1/0.0)), which stops any script calling it each step.
 def display_state(index, puck_pos_noM=None):
     global frame_count
     # Create a blank white image
@@ -1970,14 +2176,19 @@ def display_state(index, puck_pos_noM=None):
     
     cv2.waitKey(1)  # Add small delay so window updates
     frame_count += 1
+    # Deliberate stop after 15 s of video.
     if frame_count == 60*15:
         out.release()
         cv2.destroyAllWindows()
         print(1/0.0)
 
+# Mallet limits, shape (game, player, x/y, lower/upper).
 def get_mallet_bounds():
     return bounds_mallet
 
+# Restart the games in `index`: mallets back to their home points, puck to its start
+# position, and new motor constants ab_vars (len(index), 2, 6). The games stay frozen
+# until the next take_action().
 def reset_sim(index = None, ab_vars=None):#, left_scored= None):
     if index is None:
         index = np.array([i for i in range(game_number)])
@@ -2015,6 +2226,7 @@ def reset_sim(index = None, ab_vars=None):#, left_scored= None):
     C6_idx[:,:,0] = ab_vars[:,:,1] - ab_vars[:,:,4]
     C6_idx[:,:,1] = ab_vars[:,:,1] + ab_vars[:,:,4] #[a2-b2, a2+b2]
 
+    # Note: a3 is used for both axes here, unlike initalize() (a3-b3 and a3+b3).
     C7_idx = np.empty((len(index),2,2))
     C7_idx[:,:,0] = ab_vars[:,:,2]
     C7_idx[:,:,1] = ab_vars[:,:,2] #[a3-b3, a3+b3]
@@ -2022,6 +2234,7 @@ def reset_sim(index = None, ab_vars=None):#, left_scored= None):
     A = np.sqrt(np.square(C6_idx) - 4 * C5_idx * C7_idx)
     B = 2 * np.square(C7_idx) * A
 
+    # Recompute the motor-model coefficients for these games (same formulas as initalize).
     C5[index] = C5_idx
     C6[index] = C6_idx
     C7[index] = C7_idx

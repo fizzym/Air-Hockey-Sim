@@ -1,3 +1,21 @@
+# torchRL_Training_SAC.py
+#
+# Trains the air hockey policy with Soft Actor-Critic (SAC) in the vectorized
+# simulator (Air_hockey_sim_vectorized.py). Two agents are trained together:
+#   policy_modules[0]  attacker: the main policy. Plays every left-side player, and
+#                      right-side players that are not in the defending role.
+#   policy_modules[1]  defender: plays right-side opponents while they defend.
+# The script reproduces the real robot's sensing: a 120 fps camera with noise, blind
+# spots and delay, a delayed mallet reading, and a decision on every other frame
+# (60 Hz).
+#
+# Settings are just below: load_filepath, save_filepath and train.
+#   train = True   collect experience and train; saves save_filepath every 50 rounds
+#   train = False  watch 3 games played by the loaded policy (evaluation)
+#
+# There are 2*envs observation rows, one per player: rows [0, envs) are the left
+# players and rows [envs, 2*envs) the right players. Each row is seen from that
+# player's own side, so right-side coordinates are mirrored (bounds - position).
 import torch
 
 # Use the GPU when one is available, otherwise fall back to the CPU.
@@ -25,44 +43,63 @@ import torch.nn.functional as F4
 import copy
 from torchrl.data import PrioritizedReplayBuffer, LazyTensorStorage
 
+# Checkpoint to start from, file to save to, and train (True) or just watch (False).
 load_filepath = "checkpoints/SAC_237.pth" #241
 save_filepath = "checkpoints/SAC_238.pth" #Best is 12, 15, 22, 44, 76, 103, 121, 134, 142, 160, 165, 178
 train = True
 #182, 174
 # Simulation parameters
+# Observation layout (39 values per player):
+#    0-19  puck x,y and opponent mallet x,y from 5 past camera frames (see `frames`)
+#   20-23  own mallet position and velocity (noisy)
+#   24-27  own mallet position and velocity at the previous decision
+#   28-31  previous action: target x,y and voltages Vx,Vy
+#   32-37  motor constants a1..b3 (scaled), so the policy can adapt to the motors
+#   38     role flag: 1 while defending (puck on the opponent's half), else 0
 obs_dim = 39 #[puck_pos, opp_mallet_pos] #guess mean low stdl
             #[mallet_pos, mallet_vel, past mallet_pos, past malet_vel, past action]
             #[a1, a2, a3, b1, b2, b3]
             # opp defending
             # 20 + 8 + 4 + 6 + 1 = 39
 
+# Sizes in metres, and the belt pulley radius.
 mallet_r = 0.1010 / 2
 puck_r = 0.0826 / 2
 pullyR = 0.0357347133
 
 #col: n_f + (1-n_f/n_0) * 2/(1+e^(n_r x^2)) n_0
 
+# Actions: [target x, target y, speed (fraction of Vmax), x/y voltage split,
+# hold gate (higher = more likely to keep the previous action)].
 action_dim = 5
 Vmax = 24*0.9
 
+# Camera noise, measured on the real table. Std grows with distance from the camera
+# (a*x + b). puck_beam_std applies when the gantry beam partly hides the puck,
+# percent_miss is the chance a hidden frame is lost, and puck_perlin_std is the size of
+# the fixed lens-distortion error.
 puck_std = np.array([[0.000049,0.000007], [0.000024,0.000035]]) # std in x y, a*x + b
 puck_beam_std = np.array([[-0.000169,0.000926], [-0.000072,0.000662]]) #std in x y, a*x+b
 percent_miss = np.array([0.2, 0.25]) #a*x+b
 puck_perlin_std = 0.0012
 
+# Camera and gantry beam geometry, used to work out when the beam hides the puck.
 camera_pos = [0.4, 1.5] #x,z
 beam_width = 0.0508
 beam_thickness = 0.0254
 beam_height = 0.06765 #from floor roof of beam
 
+# Noise on the mallet position and velocity the robot reads from its motors.
 mallet_std = 0.0005
 mallet_vel_std = 0.07
 
+# Noise on the commanded voltages.
 V_std_x = 0.07
 V_std_y = 0.07
 
 # (7.629e-06, 6.617e-03, 7e-02, -7.445e-06, -2.661e-03, 5.277e-03
 
+# Ranges for the motor constants [a1, a2, a3, b1, b2, b3], drawn per game and player.
 ab_ranges = np.array([
         [1.6e-05, 2.0e-05], #[6.9e-6, 8.5e-6],  # a1
         [9.0e-3, 1.12e-2],  # a2
@@ -74,19 +111,25 @@ ab_ranges = np.array([
 
 #[2.259685e-05, 1.0497799e-02, 6.2993579e-02, -1.256968e-05, -5.087524e-03, 4.398169e-04])
 
+# Extra random speed factor applied to all six constants of a player.
 speed_var = [0.7,1.2]
 
 #mean, std, min, max
+# Delay from a camera frame to the action based on it: mean, std, min, max (s).
 image_delay = [13.38839/1000, 0.2/1000, 13/1000, 13.7/1000]
 camera_period = 1/119.96
 
+# Which past camera frames go into the observation (0 = newest).
 frames = [0, 1, 2, 5, 11]
 
+# Note: here `height` is the table length (x) and `width` its width (y), the opposite
+# of the simulator's names.
 height = 2.362
 width = 1.144
 bounds = np.array([height, width])
 goal_width = 0.3345
 
+# SAC hyperparameters.
 lr_val = 1e-5
 policy_lrs = [lr_val, lr_val, lr_val] #policy, def1, def2
 Q_lrs = [lr_val, lr_val, lr_val] #policy, def1, def2
@@ -94,6 +137,7 @@ Q_lrs = [lr_val, lr_val, lr_val] #policy, def1, def2
 gamma = 0.98
 tau = 0.001
 
+# img_offset: defenders see camera frames this many frames older (extra delay).
 batch_size = 1024
 img_offset = 12 #17
 
@@ -101,8 +145,12 @@ img_offset = 12 #17
 
 #------------------
 
+# The beam's shadow edges on the table, as (slope, offset) in terms of the beam position.
 beam_coeffs = np.array([[camera_pos[1]/(camera_pos[1]-beam_height+beam_thickness), (beam_height-beam_thickness)*(camera_pos[0]-beam_width/2)/(camera_pos[1]-beam_height+beam_thickness) - beam_width/2], [1+(beam_height)/(camera_pos[1]-beam_height), beam_height*(camera_pos[0]+beam_width/2)/(camera_pos[1]-beam_height) + beam_width/2]])
 
+# Networks. policy_modules: [attacker, defender]. example_policy_modules: frozen
+# opponents (straight-shot and bank-shot models) filled in by load_checkpoint().
+# Each policy outputs a mean and a scale for each of the 5 actions.
 policy_modules = [] #[policy, def1, def2]
 example_policy_modules = []
 for _ in range(2):
@@ -138,6 +186,7 @@ for _ in range(2):
                         ))
 
 #Q nets
+# Two Q networks per agent (clipped double Q): [attacker Q1, Q2, defender Q1, Q2].
 Q_modules = [] # [policy 1/2, def1 1/2, def2 1/2]
 for _ in range(4):
     Q_modules.append(nn.Sequential(
@@ -156,6 +205,8 @@ for _ in range(4):
 
 action_center = torch.tensor([0, 0, 0, 0, 0], dtype=torch.float32)
 
+# Weight init: small output layers so each policy starts near action_center with
+# moderate noise, and the Q values start near 0.
 def init_policy(m):
     if isinstance(m, nn.Linear):
         if m.out_features == action_dim * 2:
@@ -191,6 +242,7 @@ for i in range(2):
                             example_policy_modules[i], in_keys=["observation"], out_keys=["loc", "scale"]
                         ).to(DEVICE)
 
+# Lets a Q network take the observation and the action as separate inputs.
 class QNetWrapper(nn.Module):
     def __init__(self, net):
         super().__init__()
@@ -211,6 +263,8 @@ for i in range(4):
                         Q_modules[i], in_keys=["observation", "action"], out_keys=["q_value"]
                     ).to(DEVICE)
 
+# Action limits for the TanhNormal distributions: lows/highs[0] attacker,
+# [1] defender, [2] unused. (low/high here are not used.)
 low = torch.tensor([mallet_r+0.01, mallet_r+0.01, 0, -1, 0], dtype=torch.float32).to(DEVICE)
 high = torch.tensor([bounds[0]/2-mallet_r-0.01, bounds[1] - mallet_r-0.01, 1, 1, 1], dtype=torch.float32).to(DEVICE)
 
@@ -222,6 +276,9 @@ highs = [[bounds[0]/2-mallet_r-0.01, bounds[1] - mallet_r-0.01, 1, 1, 1],
             [bounds[0]/2-mallet_r-0.01-2*puck_r, bounds[1] - mallet_r-0.01, 0.7, 1, 1],
             [mallet_r+0.05, bounds[1] - mallet_r-0.11, 0.5, 1, 1]]
 
+# Wrap the networks as stochastic policies (tanh-squashed Gaussian within the limits).
+# When training, actions are sampled. When evaluating, the attacker and defender use
+# TorchRL's default, deterministic action; the frozen models still sample.
 for i in range(2):
     if train:
         policy_modules[i] = ProbabilisticActor(
@@ -283,6 +340,7 @@ for i in range(2):
             return_log_prob=True,
         ).to(DEVICE)
 
+# Entropy targets and learnable temperatures (log alpha) for SAC, per agent.
 target_entropy = [-float(6.0), -float(4.0)]
 
 
@@ -295,6 +353,7 @@ for j in range(2):
     else:
         log_alphas.append(torch.full((1,), -5.5, requires_grad=True, device=DEVICE))
 
+# Optimizers: one Adam each for the temperature, the policy and the pair of Q networks.
 alpha_optimizers = []
 for i in range(2):
     alpha_optimizers.append(torch.optim.Adam([log_alphas[i]], lr=1e-4))
@@ -307,10 +366,12 @@ Q_optimizers = []
 for i in range(2):
     Q_optimizers.append(torch.optim.Adam(list(Q_modules[2*i].parameters()) + list(Q_modules[2*i+1].parameters()), lr=Q_lrs[i]))
 
+# Target critics, updated slowly (Polyak averaging) in update_sac_agent().
 Q_modules_target = []
 for i in range(4):
     Q_modules_target.append(copy.deepcopy(Q_modules[i]).to(DEVICE))
 
+# Gradient-scaling helper (not used in this script).
 class ScaleGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, scale):
@@ -328,6 +389,9 @@ class ScaleGrad(torch.autograd.Function):
 #    optimizer_policy.load_state_dict(checkpoint['policy_optim_state_dict'])
 #    optimizer_value.load_state_dict(checkpoint['value_optim_state_dict'])
 
+# One SAC update for agent i (0 = attacker, 1 = defender) on a batch from its replay
+# buffer. Returns (Q loss, policy loss, log alpha). Log-probs are clamped to [-7, 100]
+# and gradients clipped to norm 1.0.
 def update_sac_agent(i, batch_size, gamma=0.99, tau=0.005):
     # Select components for agent i
     if i == 0:
@@ -377,6 +441,7 @@ def update_sac_agent(i, batch_size, gamma=0.99, tau=0.005):
     Q_optimizers[i].step()
     
       
+    # --- 2. Policy update: maximise min(Q1, Q2) - alpha * log prob ---
     actor_td = actor(batch)
     log_prob = torch.clamp(actor_td.get("action_log_prob"), -7, 100)
     
@@ -408,6 +473,7 @@ def update_sac_agent(i, batch_size, gamma=0.99, tau=0.005):
 
     # Alpha Update
     
+    # --- 3. Temperature update: move the entropy towards target_entropy[i] ---
     alpha_loss = -(log_alpha * (log_prob + target_entropy[i]).detach()).mean()
     alpha_optimizers[i].zero_grad()
     alpha_loss.backward()
@@ -424,6 +490,7 @@ def update_sac_agent(i, batch_size, gamma=0.99, tau=0.005):
         
     return q_loss.item(), policy_loss.item(), log_alpha.item()
 
+# Save both agents, their critics, temperatures and optimizer states.
 def save_checkpoint(path):
     checkpoint = {
         'policies': [p.state_dict() for p in policy_modules],
@@ -436,6 +503,9 @@ def save_checkpoint(path):
     torch.save(checkpoint, path)
     print(f"Checkpoint saved to {path}")
 
+# Load both agents, critics and optimizers from `path`, plus the frozen opponents
+# SAC_212 (straight shots) and SAC_237 (bank shots). Learning rates are then reset to
+# the values set above.
 def load_checkpoint(path):
     checkpoint = torch.load(path, map_location=DEVICE)
 
@@ -478,6 +548,8 @@ def load_checkpoint(path):
 if load_filepath is not None:
     load_checkpoint(load_filepath)
 
+# Delay between reading the mallet state and acting, drawn from a measured histogram
+# (ms, returned in s).
 def sample_mallet_delay(n_samples=1):
     intervals = np.array([
         [4.6, 4.7],
@@ -499,6 +571,7 @@ def sample_mallet_delay(n_samples=1):
     # Sample uniformly within those ranges
     return np.random.uniform(lows, highs) / 1000.0
 
+# Number of games simulated in parallel.
 envs = 2048 #2048
 if not train:
     envs = 3
@@ -509,6 +582,8 @@ if DEVICE.type == "cpu" and envs > CPU_ENVS:
     envs = CPU_ENVS
 
 # Generate 2D low-frequency Perlin noise
+# Start positions: mallets at their home points; puck at a random spot in the left
+# quarter of the table, not touching the left mallet.
 mallet_init = np.array([[0.25, 0.5], [0,0]])
 mallet_init[1] = bounds - mallet_init[0]
 
@@ -523,8 +598,12 @@ while len(puck_pos) < envs:
 
 puck_pos = np.array(puck_pos[:envs])
 
+# Current observations, one row per player.
 obs = np.empty((2*envs, obs_dim))
 
+# Lens-distortion error: one low-frequency Perlin noise map scaled to puck_perlin_std.
+# Each game reads it at its own random offsets (noise_seeds), separately for puck x/y
+# and mallet x/y.
 shape = (2000, 1000)
 res = (20, 20)  # low resolution = low frequency
 
@@ -560,6 +639,8 @@ for i in range(4):
 #if not train:
 #    np.random.seed(35)
 
+# Motor constants per game and player. b1..b3 are capped at 95% of a1..a3 in size,
+# a random speed factor is applied, and 20% of players use the measured real values.
 ab_vars = np.random.uniform(
         low=ab_ranges[:, 0].reshape(1, 1, 6),    # Shape: (1, 1, 6)
         high=ab_ranges[:, 1].reshape(1, 1, 6),   # Shape: (1, 1, 6)
@@ -578,6 +659,7 @@ if not train:
     ab_vars[0,0,:] =np.array([1.924e-05, 9.018e-03, 6.225e-02, -1.110e-05, -3.851e-03, 2.345e-03])
     ab_vars[0,1,:] = np.array([1.924e-05, 9.018e-03, 6.225e-02, -1.110e-05, -3.851e-03, 2.345e-03])
 
+# Motor constants as seen in the observation, scaled to around 1e-2.
 ab_obs = np.zeros((2*envs, 6))
 
 ab_obs_scaling = np.array([
@@ -598,8 +680,11 @@ ab_obs[envs:, :] = (ab_vars[:,1,:] / pullyR) * ab_obs_scaling[:]
 #[a1, a2, a3, b1, b2]
 #20 + 8 + 4 + 14 + 5
 
+# Create the simulator.
 sim.initalize(envs=envs, mallet_r=mallet_r, puck_r=puck_r, goal_w=goal_width, V_max=Vmax, pully_radius=pullyR, ab_vars=ab_vars, puck_inits=puck_pos)
 
+# Mirror observations top-to-bottom (y -> table width - y, y velocities negated).
+# Used for data augmentation.
 def apply_symmetry(t_obs):
     t_obs_flip = t_obs.copy()
     t_obs_flip[:, 1:22:2] = bounds[1] - t_obs_flip[:, 1:22:2]
@@ -622,6 +707,9 @@ def apply_symmetry_tensor(t_obs):
 
 camera_buffer_size = 50
 
+# Ring buffer of the last camera frames: array (frame, row, [puck x, y, opponent
+# mallet x, y]). put() stores a new newest frame; get(indices) returns the frames that
+# many steps back, flattened to one row per player.
 class CircularCameraBuffer():
     def __init__(self, array_init, buffer_size):
         self.array = array_init
@@ -642,6 +730,8 @@ class CircularCameraBuffer():
             new_indicies.append((self.head + idx) % self.buffer_size)
         return self.array[np.array(new_indicies)].transpose(1, 0, 2).reshape(2*envs, -1)
     
+# Fill the camera history with the starting positions plus noise. beam_interference
+# marks rows where the gantry beam partly hides the puck.
 camera_buffer = np.empty((camera_buffer_size, 2*envs, 4))
 
 beam_interference = np.empty((2*envs), dtype=np.bool_)
@@ -665,6 +755,7 @@ camera_buffer[:, envs:, 2:] = np.tile(np.full((envs,2), mallet_init[1]), (camera
 
 camera_buffer = CircularCameraBuffer(camera_buffer, camera_buffer_size)
 
+# Initial observations for the left rows, then the right rows (layout at the top).
 obs[:envs, :] = np.concatenate([np.zeros((envs,20)),
                                 np.full((envs,2), mallet_init[0])+np.random.normal(0,mallet_std,(envs,2)),
                                 np.random.normal(0, mallet_vel_std, size=(envs,2)),
@@ -696,6 +787,7 @@ obs[:,:20] = camera_obs
 past_obs = obs.copy()
 obs_init = obs[:,:32].copy()
 
+# Ring buffer of numbers; subtract() moves every stored time closer.
 class CircularBuffer():
     def __init__(self, array_init):
         self.array = array_init
@@ -712,6 +804,11 @@ class CircularBuffer():
     def get(self, idx):
         return self.array[(self.head + idx) % self.buffer_size]
 
+# Event timing state:
+#   time_from_last_img: time since the last camera frame
+#   inference_img:      which stored frames trigger a decision (every other one: 60 Hz)
+#   agent_actions:      time until the action based on each frame is applied
+#   mallet_time:        time until the mallet state for that action is read
 time_from_last_img = 0
 
 inference_img = np.zeros((camera_buffer_size,), dtype=np.bool_)
@@ -730,6 +827,7 @@ for i in range(len(mallet_time)):
     mallet_time[i] = agent_actions.get(i) - sample_mallet_delay()
 mallet_time = CircularBuffer(mallet_time)
 
+# Bookkeeping per row.
 save_num = 0
 miss_mask = np.empty((2*envs))
 
@@ -739,6 +837,9 @@ if train:
 else:
     self_play = 1
 
+# Per-row episode state. `defending` is True while the puck is on that player's
+# opponent's half. The right-side rows after the self-play games start out defending
+# and use the defender policy while they do.
 dones = np.zeros((2*envs,), dtype=np.bool_)
 err_dones = np.zeros((envs,), dtype=np.bool_)
 rewards = np.zeros((2*envs,))
@@ -752,6 +853,7 @@ defending_mask[envs+self_play:] = True
 next_state_def = defending.copy()
 attack_mask = np.ones((2*envs), dtype=np.bool_)
 
+# Shot score from the simulator for this step (see update_puck in the simulator).
 crossed = np.zeros((2*envs,))
 bounce_reward_multiplyer = 1.001
 sim.bounce_reward_multiplyer = bounce_reward_multiplyer
@@ -763,10 +865,12 @@ past_Vo = np.stack([obs[:envs, 30:32], obs[envs:, 30:32]], axis=1)
 xf_mallet_noise = np.empty((envs, 4))
 actions_since_reset = 0
 
+# Rows that get mirrored (apply_symmetry) for this decision.
 flipped = np.random.random((2*envs,)) > 0.5
 
 #random_offset_attack = (np.random.uniform(size=(2*envs,))-0.5)*0.06
 #random_offset_defending = (np.random.uniform(size=(2*envs,))-0.5)*0#0.03
+# 10% of rows get a fixed error of up to +-2 cm in the reading of their own mallet's y.
 random_offset = (np.random.uniform(size=(2*envs,))-0.5)*0.04 #0.04
 random_offset[np.random.random((2*envs,)) < 0.9] = 0
 #random_offset[:] = random_offset_defending
@@ -777,14 +881,19 @@ right_envs_mask[envs:] = True
 past_puck_pos = puck_pos.copy()
 
 
+# Scripted blocker: in half of the non-self-play games, while defending, the right
+# mallet goes to a random x and lines up between the puck and the goal centre.
 def_pos_mask = np.zeros((envs,), dtype=np.bool_)
 mask_def_envs = np.zeros((envs,), dtype=np.bool_)
 mask_def_envs[self_play:self_play+int((envs-self_play)/2.0)] = True
 def_pos = np.random.random((envs,)) * (bounds[0]/2 - 2*mallet_r) + mallet_r
 defending_mask_pos = np.zeros((2*envs,), dtype=np.bool_)
 
+# After a defender picks a new action it keeps it for the next 3 decisions.
 action_skips = np.zeros((envs-self_play,), dtype=np.int8)
 
+# Games meant for the frozen straight-shot / bank-shot opponents. The lines that would
+# use their actions are commented out in the loop below, so they currently do nothing.
 shot_counts = [0,0]
 if train:
     straight_shot_mask = np.zeros((2*envs,), dtype=np.bool_)
@@ -796,6 +905,9 @@ if train:
     alternate_model_mask = np.zeros((2*envs,), dtype=np.bool_)
     alternate_model_mask[alt_start:alt_start+alt_count] = True
 #move timeline to first action time
+# Event loop: advance the simulator to whichever comes first, the next camera frame,
+# the next mallet reading or the next action time. This first pass stops at the first
+# action time.
 while True:
     img_idx = None
     next_img = time_from_last_img + camera_period
@@ -823,6 +935,8 @@ while True:
             img_idx = i
 
 
+    # Camera frame: store noisy puck and opponent-mallet positions in the camera buffer.
+    # Frames hidden by the beam may be lost (the previous reading is repeated).
     if next_img < next_mallet and next_img < next_action:
         #mallet_pos (mallet, op_mallet)
         mallet_pos, _, puck_pos, puck_vel, _, _ = sim.step(next_img)
@@ -876,6 +990,7 @@ while True:
         mallet_time.put(agent_actions.get(0) - sample_mallet_delay())
 
         inference_img.put(np.logical_not(inference_img.get(0)))
+    # Mallet reading: record the noisy mallet state the robot will act on.
     elif next_mallet < next_img and next_mallet < next_action:
         mallet_pos, mallet_vel, _, _, _, _ = sim.step(next_mallet)
 
@@ -888,6 +1003,7 @@ while True:
         agent_actions.subtract(next_mallet)
         mallet_time.subtract(next_mallet)
 
+    # Action time: copy the delayed camera frames into the observation and stop.
     elif next_action < next_img and next_action < next_mallet:
         _, _, puck_pos, _, _, _ = sim.step(next_action)
 
@@ -905,6 +1021,7 @@ while True:
 
         break
 
+# ================ Training ================
 if train:
 
     """
@@ -923,6 +1040,7 @@ if train:
     )
     """
 
+    # Separate replay buffers for the attacker and the defender.
     policy_buffer = TensorDictReplayBuffer(
         storage=LazyTensorStorage(1_500_000),
         batch_size=batch_size,
@@ -934,6 +1052,8 @@ if train:
     )
 
     #Simulation loop
+    # One round: 10 decisions in every game, then (after round 40) 120 SAC updates per
+    # agent. A checkpoint is saved every 50 rounds.
     for update in range(500000):  # Training loop
         print(update)
         print("simulating...")
@@ -941,6 +1061,7 @@ if train:
         for timestep in range(10):
             #random_offset[defending] = random_offset_defending[defending]
             #random_offset[np.logical_not(defending)] = random_offset_attack[np.logical_not(defending)]
+            # 1. Choose actions. Apply the position-reading error and the mirror flip first.
             with torch.no_grad():
 
                 past_obs[:envs, 21] += random_offset[:envs]
@@ -953,6 +1074,7 @@ if train:
                 flipped = np.random.random((2*envs,)) > 0.5
                 past_obs[flipped] = apply_symmetry(past_obs[flipped])
 
+                # Attacker policy for every row; defender rows are overwritten below.
                 tensor_obs = TensorDict({"observation": torch.tensor(past_obs, dtype=torch.float32)}).to(DEVICE)
                 
                 policy_out = policy_modules[0](tensor_obs)
@@ -971,12 +1093,14 @@ if train:
 
                 actions_np = actions.numpy()    
 
+                # Defender policy for right-side opponent rows while they defend.
                 def_tensor_obs = TensorDict({"observation": torch.tensor(past_obs[envs+self_play:], dtype=torch.float32)}).to(DEVICE)
                 def_out = policy_modules[1](def_tensor_obs)
                 def_actions = def_out["action"].detach().to('cpu')
 
                 actions_np[defending & defending_mask] = def_actions[defending[envs+self_play:]]
 
+                # Scripted blocker overrides some defenders.
                 def_pos_mask[:] = 0
                 def_pos_mask[defending[envs:] & (past_puck_pos[:,0] < bounds[0]/2) & mask_def_envs] = True
                 def_pos_xf = np.stack([def_pos[def_pos_mask], bounds[1]/2 - (past_puck_pos[def_pos_mask, 1] - bounds[1]/2) * def_pos[def_pos_mask] / (bounds[0] - past_puck_pos[def_pos_mask, 0])], axis=1)
@@ -987,6 +1111,7 @@ if train:
                 actions_np[defending_mask_pos] = algorithm_def_action
                 actions_np[:,1][defending_mask_pos & flipped] = bounds[1] - actions_np[:,1][defending_mask_pos & flipped]
 
+                # Undo the mirror flip (observations and target y) and the reading error.
                 past_obs[flipped] = apply_symmetry(past_obs[flipped])
                 actions_np[:,1][flipped] = bounds[1] - actions_np[:,1][flipped]
 
@@ -997,6 +1122,9 @@ if train:
                 past_obs[right_envs_mask & defending, 20] -= random_offset[right_envs_mask & defending]
                 past_obs[right_envs_mask & defending, 24] -= random_offset[right_envs_mask & defending]
                     
+            # 2. Turn actions into mallet targets and voltages. A target is kept a puck's width
+            # away from a wall when the puck is between the mallet and that wall. Right-side
+            # targets are converted to table coordinates.
             xf = np.stack([actions_np[:envs, :2], actions_np[envs:,:2]], axis=1)
             
 
@@ -1010,15 +1138,18 @@ if train:
 
             xf[:,1,:] = bounds - xf[:,1,:]
 
+            # Voltages: speed * Vmax split between x and y, plus noise (at least 0.1 V).
             Vo = actions_np[:,2][:, None] * Vmax * np.stack((1+actions_np[:,3], 1-actions_np[:,3]), axis=1) + np.stack((np.random.normal(0, V_std_x, (2*envs)), np.random.normal(0, V_std_y, (2*envs))), axis=-1)
 
             Vo[:,0] = np.maximum(Vo[:,0], 0.1)
             Vo[:,1] = np.maximum(Vo[:,1], 0.1)
             Vo = np.stack([Vo[:envs,:], Vo[envs:,:]], axis=1)
 
+            # Small reward for using the hold gate.
             rewards[np.logical_not(defending & defending_mask)] += 0.5 * actions_np[np.logical_not(defending & defending_mask),4]
             rewards[defending & defending_mask] += np.where(past_puck_pos[(defending & defending_mask)[envs:], 0] < bounds[0]/2, 0.5 * actions_np[defending & defending_mask,4], 0)
 
+            # Hold gate: with probability ~gate, keep the previous target and voltage.
             no_update_mask = np.stack([actions_np[:envs,4] > np.random.random((envs,))*1.01, np.concatenate([actions_np[envs:envs+self_play,4] > np.random.random((self_play,))*1.01, actions_np[envs+self_play:,4] > np.random.random((envs-self_play,))*1.01], axis=0)], axis=1)
             action_skips += (action_skips != 0)
             action_skips += (action_skips == 0) & np.logical_not(no_update_mask[self_play:, 1])
@@ -1033,14 +1164,17 @@ if train:
             past_xf = xf.copy()
             past_Vo = Vo.copy()
 
+            # Send the moves to the simulator.
             sim.take_action(xf, Vo)
             sim.impulse(2/60, 0.005)
 
+            # The next observation records this decision's mallet state and action.
             obs[:, 24:28] = past_obs[:, 20:24]
             obs[:, 28:32] = np.concatenate([np.concatenate([xf[:,0,:], Vo[:,0,:]], axis=1), np.concatenate([bounds - xf[:,1,:], Vo[:,1,:]], axis=1)], axis=0)
 
             attack_mask[envs+self_play:] = np.logical_not(defending[envs+self_play:])
 
+            # Penalty of -1 for each action output pinned at the edge of its range.
             rewards[attack_mask] += np.where((actions_np[attack_mask,0] < mallet_r+0.02) | (actions_np[attack_mask,0] > bounds[0]/2-mallet_r-0.02), -1.0, 0)
             rewards[attack_mask] += np.where((actions_np[attack_mask,1] < mallet_r+0.02) | (actions_np[attack_mask,1] > bounds[1] - mallet_r - 0.02), -1.0, 0)
 
@@ -1049,6 +1183,8 @@ if train:
 
             rewards[:] += np.where((actions_np[:,4] > 0.995) | (actions_np[:,4] < 0.005), -1.0, 0)
 
+            # 3. Run the event loop (as above) until the next action time, collecting goals,
+            # errors and shot scores along the way.
             while True:
                 img_idx = None
                 next_img = time_from_last_img + camera_period
@@ -1082,6 +1218,8 @@ if train:
 
                     crossed = np.maximum(crossed, np.concatenate((cR, cL), axis=0))
 
+                    # Errors cost -500 to the side the puck is on. Goals: +700 for the scorer, -500 for
+                    # the side that conceded.
                     env_err = sim.check_state()
                     entered_left_goal_mask, entered_right_goal_mask = sim.check_goal()
                     if len(env_err) > 0:
@@ -1102,6 +1240,8 @@ if train:
 
                     err_dones[entered_left_goal_mask | entered_right_goal_mask] = True
 
+                    # Defender episodes end when the puck comes back over (-10) or is left slow on the
+                    # far side (+100).
                     new_dones_fail = (np.logical_not(dones[envs+self_play:])) & (defending[envs+self_play:] & (puck_pos[self_play:,0] < bounds[0]/2) & (past_puck_pos[self_play:,0] > bounds[0]/2))
                     new_dones_success = (np.logical_not(dones[envs+self_play:])) & (defending[envs+self_play:] & (puck_pos[self_play:,0] > bounds[0]/2) & (np.linalg.norm(puck_vel[self_play:], axis=1) < 0.5))
                     dones[envs+self_play:] = dones[envs+self_play:] | new_dones_fail | new_dones_success
@@ -1240,6 +1380,8 @@ if train:
 
                     #next_state_def[envs:] = (puck_pos[:,0] < bounds[0]/2) | (defending[envs:] & (np.linalg.norm(puck_vel, axis=1) > 1.5))
                     #next_state_def[:envs] = (puck_pos[:,0] > bounds[0]/2) | (defending[:envs] & (np.linalg.norm(puck_vel, axis=1) > 1.5))
+                    # A player defends while the puck is on the opponent's half. Defenders see older
+                    # frames (img_offset).
                     next_state_def[:envs] = (puck_pos[:,0] > bounds[0]/2)
                     next_state_def[envs:envs+self_play] = (puck_pos[:self_play,0] < bounds[0]/2)
                     next_state_def[envs+self_play:] = (puck_pos[self_play:,0] < bounds[0]/2) | (defending[envs+self_play:] & (np.linalg.norm(puck_vel[self_play:], axis=1) > 3.0))
@@ -1252,27 +1394,35 @@ if train:
 
                     break
 
+            # 4. Shaping rewards.
             actions_since_reset += 1
             attack_mask[envs+self_play:] = np.logical_not(defending[envs+self_play:]) & np.logical_not(next_state_def[envs+self_play:])
 
+            # Puck stalled on the player's own half: -5.
             rewards[left_envs_mask & np.logical_not(defending)] += np.where((puck_pos[:,0] < bounds[0]/2) & (np.abs(puck_vel[:,0]) < 0.15), -5.0, 0)[np.logical_not(defending[:envs])]
             rewards[right_envs_mask & np.logical_not(defending)] += np.where((puck_pos[:,0] > bounds[0]/2) & (np.abs(puck_vel[:,0]) < 0.15), -5.0, 0)[np.logical_not(defending[envs:])]
 
+            # After a shot heading for goal, reward the puck's speed on the far half.
             rewards[:envs][np.logical_not(defending[:envs]) & (puck_pos[:,0] > bounds[0]/2)] += (np.linalg.norm(puck_vel,axis=1)*5.0 * crossed[:envs])[np.logical_not(defending[:envs]) & (puck_pos[:,0] > bounds[0]/2)]
             rewards[envs:][np.logical_not(defending[envs:]) & (puck_pos[:,0] < bounds[0]/2)] += (np.linalg.norm(puck_vel,axis=1)*5.0 * crossed[envs:])[np.logical_not(defending[envs:]) & (puck_pos[:,0] < bounds[0]/2)]
 
             #dones[:envs][np.logical_not(defending[:envs]) & (puck_pos[:,0] > bounds[0]/2) & (crossed[:envs] == 0)] = True
             #dones[envs:][np.logical_not(defending[envs:]) & (puck_pos[:,0] < bounds[0]/2) & (crossed[envs:] == 0)] = True
 
+            # Count clean shots vs bank shots (only printed).
             shot_counts[0] += np.sum((np.abs(crossed - 0.5) < 0.000001) | (np.abs(crossed - 2.3) < 0.000001))
             shot_counts[1] += np.sum((np.abs(crossed) > 0.000001) & (np.abs(crossed - 0.5) > 0.000001) & (np.abs(crossed - 2.3) > 0.000001))
 
+            # Puck on the player's own half: -0.2 per decision.
             rewards[:envs] += np.where((puck_pos[:,0] < bounds[0]/2), -0.2, 0)
             rewards[envs:] += np.where((puck_pos[:,0] > bounds[0]/2) & attack_mask[envs:], -0.2, 0)
 
+            # Puck crossed to the far half on a path that will not score (crossed == 0): -200,
+            # and the episode ends (see dones below).
             rewards[:envs] += np.where((past_puck_pos[:,0] < bounds[0]/2) & (puck_pos[:,0] > bounds[0]/2) & (crossed[:envs] == 0), -200.0, 0.0)
             rewards[envs:] += np.where((past_puck_pos[:,0] > bounds[0]/2) & (puck_pos[:,0] < bounds[0]/2) & (crossed[envs:] == 0), -200.0, 0.0)
 
+            # Slow shots: -100 below 5 m/s, a further -200 below 2 m/s, and -100 below 7 m/s (further down).
             rewards[:envs] += np.where((past_puck_pos[:,0] < bounds[0]/2) & (puck_pos[:,0] > bounds[0]/2) & (np.linalg.norm(puck_vel,axis=1) < 5.0), -100.0, 0)
             rewards[envs:] += np.where(attack_mask[envs:] & (past_puck_pos[:,0] > bounds[0]/2) & (puck_pos[:,0] < bounds[0]/2) & (np.linalg.norm(puck_vel,axis=1) < 5.0), -100.0, 0.0)
 
@@ -1286,7 +1436,10 @@ if train:
 
             #rewards[:envs][defending[:envs] & (past_puck_pos[:envs,0] < (bounds[0]/2+2*puck_r)) & (puck_pos[:envs,0] > (bounds[0]/2)+2*puck_r)] -= 10.0
             #rewards[:envs+self_play][defending[:envs+self_play] & np.logical_not(next_state_def[:envs+self_play])] += 5.0
+            # Role flag for the next observation.
             obs[:,38] = next_state_def[:]
+            # 5. Episode ends: goals, errors and non-scoring crossings. Terminal rewards are
+            # added, then every reward is divided by 25.
             dones[:envs] = err_dones | ((past_puck_pos[:,0] < bounds[0]/2) & (puck_pos[:,0] > bounds[0]/2) & (crossed[:envs] == 0))#| (defending[envs:] & np.logical_not(next_state_def[envs:]))
             dones[envs:] = dones[envs:] | err_dones | ((past_puck_pos[:,0] > bounds[0]/2) & (puck_pos[:,0] < bounds[0]/2) & (crossed[envs:] == 0))
             #dones[envs:envs+self_play] = dones[envs:envs+self_play] | (defending[:self_play] & np.logical_not(next_state_def[:self_play]))
@@ -1295,6 +1448,7 @@ if train:
             rewards /= 25
             terminal_rewards[dones] = 0
 
+            # Defenders: small reward for keeping their mallet forward while the puck is on their half.
             rewards[defending & defending_mask] += np.where((past_puck_pos[self_play:][defending[envs+self_play:]][:,0] < bounds[0]/2), 0.2*past_obs[defending & defending_mask][:, 20], 0)
 
             #print("----")
@@ -1304,6 +1458,7 @@ if train:
             #print(obs[0,:])
             #print(dones[0])
 
+            # 6. Store transitions. Attacker rows (all left rows and attacking right rows):
             td = TensorDict({
                     "observation": torch.tensor(past_obs[attack_mask], dtype=torch.float32),
                     "action": torch.tensor(actions_np[attack_mask], dtype=torch.float32),
@@ -1316,6 +1471,8 @@ if train:
 
             policy_buffer.extend(td)
 
+            # Defender rows, only on decisions where it picked a new action or its role or episode
+            # ended. Their rewards are scaled by 1.4.
             defending_td_mask = ((defending[envs+self_play:]) & (action_skips == 0)) | (defending[envs+self_play:] & np.logical_not(next_state_def[envs+self_play:])) | dones[envs+self_play:]
             
             td = TensorDict({
@@ -1332,6 +1489,8 @@ if train:
 
             defending[:] = next_state_def
                 
+            # WARNING: display_state() deliberately raises an error after 900 calls (see the
+            # simulator), which stops training at round 90.
             sim.display_state(envs-10)
 
             dones[:envs] = err_dones
@@ -1341,6 +1500,7 @@ if train:
             #    actions_since_reset = 0
             #    dones[:] = True
 
+            # 7. Restart finished games with new motor constants and fresh observations.
             num_resets = int(np.sum(dones[:envs]))
 
             if num_resets > 0:
@@ -1371,6 +1531,8 @@ if train:
                 defending[:envs][dones[:envs]] = False
 
             
+            # The new observation is the input for the next decision (defenders holding an action
+            # keep their old one). Clear the per-decision state.
             past_obs[:envs+self_play] = obs[:envs+self_play]
             past_obs[envs+self_play:][action_skips == 0] = obs[envs+self_play:][action_skips == 0]
             dones[:] = False
@@ -1379,6 +1541,7 @@ if train:
             past_puck_pos[:] = puck_pos
             crossed[:] = 0
 
+        # Fill the buffers for 40 rounds before training starts.
         if update <= 40:
             continue
 
@@ -1406,6 +1569,7 @@ if train:
                 print("not enough samples")
                 continue 
         samples = np.empty((3,int(1024*120/batch_size),3))
+        # 120 SAC updates per agent (1024*120 / batch_size).
         for j in range(int(1024*120/batch_size)):
             #policy
             # In your training loop:
@@ -1424,12 +1588,17 @@ if train:
                 print(samples[0,:,1].mean())
                 print(samples[0,:,2].mean())
 
+        # Stop (deliberately, by dividing by zero) if the attacker's critic loss diverges.
         if samples[0,:,0].mean() < -1000 or samples[0,:,0].mean() > 1000:
             print("err")
             print(1/0)
         if (update % 50 == 0) and (update != 0):
             save_checkpoint(save_filepath)
 
+# ================ Evaluation (train = False) ================
+# Same event loop with 3 games and no learning. The defender policy is switched off,
+# all games use the measured motor constants, and game 1 is shown with
+# display_state(), which stops the script after 15 s of video.
 puck_vel = np.zeros((envs,2))
 puck_pos = np.zeros((envs,2))
 past_puck_pos = puck_pos.copy()

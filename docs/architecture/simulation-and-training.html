@@ -535,7 +535,7 @@ def sample_mallet_delay(n_samples=1):
         <tr><td class="n">24–27</td><td>Own mallet position and velocity at the previous action</td></tr>
         <tr><td class="n">28–31</td><td>Previous action: target x,y and voltages Vx, Vy</td></tr>
         <tr><td class="n">32–37</td><td>This game's motor constants a1–a3, b1–b3, scaled (the robot can tell the policy how fast its motors are)</td></tr>
-        <tr><td class="n">38</td><td>Role flag: 1 = attacking, 0 = defending</td></tr>
+        <tr><td class="n">38</td><td>Role flag: 1 while defending (the puck is on the opponent's half), else 0</td></tr>
       </tbody>
     </table>
   </div>
@@ -704,7 +704,7 @@ speed_var = [0.7,1.2]</code></pre>
         <tr><td>Scores a goal</td><td class="n">+700</td><td>attacker / self-play</td></tr>
         <tr><td>Concedes a goal, or causes an invalid state on own side</td><td class="n">−500</td><td>everyone</td></tr>
         <tr><td>Shot crosses centre at under 7, 5 or 2 m/s</td><td class="n">−100 / −100 / −200 (cumulative)</td><td>attacker</td></tr>
-        <tr><td>Puck crosses centre without a clean crossing (<code>crossed == 0</code>)</td><td class="n">−200</td><td>attacker</td></tr>
+        <tr><td>Puck crosses centre on a path that will not score (<code>crossed == 0</code>); also ends the episode</td><td class="n">−200</td><td>attacker</td></tr>
         <tr><td>Puck moving under 0.15 m/s on own side</td><td class="n">−5 per action</td><td>attacker</td></tr>
         <tr><td>Puck on own side</td><td class="n">−0.2 per action</td><td>attacker</td></tr>
         <tr><td>Puck speed after a crossing, while on the far side</td><td class="n">+5 × speed</td><td>attacker</td></tr>
